@@ -1,0 +1,12 @@
+_target_: src.strategies.llada_native.LLaDANativeStrategy
+steps: 128
+gen_length: 128
+block_length: 32
+temperature: 0.0
+cfg_scale: 0.0
+remasking: low_confidence
+mask_id: 126336
+eos_token_id: 126081
+eot_token_id: 126348
+logits_eos_inf: false
+confidence_eos_eot_inf: false

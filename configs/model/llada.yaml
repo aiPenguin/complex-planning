@@ -1,0 +1,8 @@
+_target_: src.models.llada.LLaDA
+model_name: GSAI-ML/LLaDA-8B-Instruct
+device: cuda
+torch_dtype: bfloat16
+trust_remote_code: true
+padding_side: left
+use_chat_template: true
+add_generation_prompt: true

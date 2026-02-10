@@ -1,0 +1,3 @@
+_target_: src.eval.trip.TripEvaluator
+data_dir: data
+prediction_path: null

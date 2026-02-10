@@ -1,0 +1,8 @@
+defaults:
+  - model: llada
+  - strategy: llada_native
+  - eval: sudoku
+
+hydra:
+  run:
+    dir: output/${now:%Y-%m-%d}/${now:%H-%M-%S}
