@@ -1,5 +1,5 @@
 _target_: src.models.llada.LLaDA
-model_name: GSAI-ML/LLaDA-8B-Base
+model_name: GSAI-ML/LLaDA-8B-Instruct
 device: cuda
 torch_dtype: bfloat16
 trust_remote_code: true

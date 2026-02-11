@@ -1,5 +1,5 @@
 _target_: src.models.dream.Dream
-model_name: Dream-org/Dream-v0-Base-7B
+model_name: Dream-org/Dream-v0-Instruct-7B
 device: cuda
 torch_dtype: bfloat16
 trust_remote_code: true
