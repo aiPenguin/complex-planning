@@ -7,7 +7,7 @@ import json
 import re
 from typing import Any
 
-from src.utils.eval_utils import write_jsonl
+from src.utils.eval_utils import write_jsonl, save_run_artifacts
 
 
 class TripEvaluator:
@@ -91,7 +91,7 @@ class TripEvaluator:
         hard_acc = sum(hard_scores) / len(hard_scores)
         return hard_acc
 
-    def _metric(self, data: dict, preds: list[str]) -> None:
+    def _metric(self, data: dict, preds: list[str]) -> float:
         """Aggregate accuracy and print summary statistics."""
         cities, durations, responses = [], [], []
         sample_count = 0
@@ -103,6 +103,7 @@ class TripEvaluator:
 
         hard_acc = self._compute_score(cities, durations, responses)
         print(f"EM Accuracy of {sample_count} samples: {hard_acc}")
+        return hard_acc
 
     def evaluate(self, generator) -> None:
         """Run generation and evaluate the resulting trip plans."""
@@ -118,6 +119,18 @@ class TripEvaluator:
 
         generations = generator.generate(inputs)
         generations = [g.split("<|endoftext|>")[0].split("\n\nTASK")[0] for g in generations]
+        hard_acc = self._metric(data, generations)
+
+        save_run_artifacts(
+            output_dir=getattr(self, "output_dir", None),
+            name="trip",
+            sample_prompt=inputs[0],
+            predictions=generations,
+            analysis={
+                "accuracy": hard_acc,
+                "num_items": len(inputs),
+            },
+        )
         if self.prediction_path is not None:
             write_jsonl(
                 [
@@ -126,7 +139,6 @@ class TripEvaluator:
                 ],
                 self.prediction_path,
             )
-        self._metric(data, generations)
 
     def __call__(self, generator) -> None:
         self.evaluate(generator)

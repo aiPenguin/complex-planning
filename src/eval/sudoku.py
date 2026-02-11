@@ -4,10 +4,9 @@ Code borrowed and refactored from https://github.com/DreamLM/Dream/tree/main
 from __future__ import annotations
 
 from typing import Iterable, List
-
 import numpy as np
 
-from src.utils.eval_utils import read_jsonl, write_jsonl
+from src.utils.eval_utils import read_jsonl, write_jsonl, save_run_artifacts
 
 
 class SudokuEvaluator:
@@ -104,6 +103,19 @@ class SudokuEvaluator:
                 / len(data)
             )
             print(f"[Sudoku] Accuracy: {acc:.4f}")
+
+            save_run_artifacts(
+                output_dir=getattr(self, "output_dir", None),
+                name=f"sudoku_4x4_{n}",
+                sample_prompt=inputs[0],
+                predictions=generations,
+                analysis={
+                    "accuracy": acc,
+                    "num_items": len(data),
+                    "n_values": n,
+                    "n_few_shots": self.n_few_shots,
+                },
+            )
 
             if self.prediction_path is not None:
                 write_jsonl(

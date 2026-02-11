@@ -7,4 +7,4 @@ batch_size: 1
 
 hydra:
   run:
-    dir: output/${now:%Y-%m-%d}/${now:%H-%M-%S}
+    dir: output/${slug:${hydra:runtime.choices.model}}_${slug:${hydra:runtime.choices.strategy}}_${slug:${hydra:runtime.choices.eval}}_steps${strategy.steps}_${now:%Y%m%d-%H%M%S}

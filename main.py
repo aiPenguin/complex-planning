@@ -1,5 +1,14 @@
+import re
 import hydra
+from omegaconf import OmegaConf
 from omegaconf import DictConfig
+
+
+def _slug(value: str) -> str:
+    return re.sub(r"[^A-Za-z0-9_-]+", "_", str(value))
+
+
+OmegaConf.register_new_resolver("slug", _slug, replace=True)
 
 from src.engine import Engine
 

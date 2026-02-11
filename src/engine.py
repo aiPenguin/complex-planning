@@ -1,9 +1,11 @@
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, List
 import textwrap
 
 from hydra.utils import instantiate
 from omegaconf import DictConfig
+from hydra.core.hydra_config import HydraConfig
 from tqdm import tqdm
 
 
@@ -63,9 +65,11 @@ class Engine:
         self.batch_size = batch_size
         self.strategy = self._init_strategy()
         self.model = self._init_model(self.strategy)
+        self.output_dir = self._resolve_output_dir()
         self.generator = ModelGenerator(self.model, batch_size=self.batch_size)
         self.evaluator = self._init_evaluator()
         self.generator.run_label = self.evaluator.__class__.__name__
+        setattr(self.evaluator, "output_dir", str(self.output_dir))
 
     def _init_model(self, strategy: object) -> object:
         """Instantiate the model with the configured strategy injected."""
@@ -141,3 +145,15 @@ class Engine:
         print(f"strategy: {strategy_name} {strategy_fields}")
         print(f"eval:     {eval_name} {eval_fields}")
         print(f"batch:    {self.batch_size}")
+        print(f"output:   {self.output_dir}")
+
+    def _resolve_output_dir(self) -> Path:
+        try:
+            runtime_output = HydraConfig.get().runtime.output_dir
+            output_dir = Path(runtime_output)
+            output_dir.mkdir(parents=True, exist_ok=True)
+            return output_dir
+        except Exception:
+            fallback = Path("output") / "runs" / "unknown_run"
+            fallback.mkdir(parents=True, exist_ok=True)
+            return fallback

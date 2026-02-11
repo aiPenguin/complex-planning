@@ -7,7 +7,7 @@ import re
 from collections import Counter
 from typing import Iterable, List
 
-from src.utils.eval_utils import read_jsonl, write_jsonl
+from src.utils.eval_utils import read_jsonl, write_jsonl, save_run_artifacts
 
 
 class CDEvaluator:
@@ -88,6 +88,19 @@ class CDEvaluator:
         generations = [g.split("<|end_of_text|>")[0].split("\n")[0] for g in generations]
         acc = self._metric([i["input"] for i in data], generations)
         print(f"[CD] Accuracy: {acc:.4f}")
+
+        save_run_artifacts(
+            output_dir=getattr(self, "output_dir", None),
+            name=f"cd{variant}",
+            sample_prompt=inputs[0],
+            predictions=generations,
+            analysis={
+                "accuracy": acc,
+                "num_items": len(data),
+                "variant": variant,
+                "n_few_shots": self.n_few_shots,
+            },
+        )
         if self.prediction_path is not None:
             write_jsonl(
                 [
