@@ -1,8 +1,10 @@
 from dataclasses import dataclass
-from typing import List
+from typing import Any, List
+import textwrap
 
 from hydra.utils import instantiate
 from omegaconf import DictConfig
+from tqdm import tqdm
 
 
 @dataclass
@@ -10,13 +12,37 @@ class ModelGenerator:
     """Thin adapter so evaluators only rely on a `generate()` method."""
     model: object
     batch_size: int | None = None
+    run_label: str | None = None
+    sample_max_chars: int = 600
+
+    def _format_sample(self, text: str) -> str:
+        preview = text.replace("\r\n", "\n").replace("\r", "\n")
+        if len(preview) > self.sample_max_chars:
+            preview = preview[: self.sample_max_chars] + "...(truncated)"
+        return preview
 
     def generate(self, prompts: List[str]) -> List[str]:
+        if prompts:
+            label = self.run_label or "generate"
+            total = len(prompts)
+            if self.batch_size is None:
+                print(f"\n[{label}] inputs={total} batch_size=None")
+            else:
+                num_batches = (total + self.batch_size - 1) // self.batch_size
+                print(
+                    f"\n[{label}] inputs={total} batch_size={self.batch_size} batches={num_batches}"
+                )
+            sample = self._format_sample(prompts[0])
+            print("[sample input]\n" + textwrap.indent(sample, "  "))
+
         if self.batch_size is None:
             return self.model.generate(prompts)
 
         outputs: List[str] = []
-        for start in range(0, len(prompts), self.batch_size):
+        total = len(prompts)
+        num_batches = (total + self.batch_size - 1) // self.batch_size
+        batch_iter = range(0, len(prompts), self.batch_size)
+        for start in tqdm(batch_iter, total=num_batches, desc="generate", unit="batch"):
             batch = prompts[start : start + self.batch_size]
             outputs.extend(self.model.generate(batch))
         return outputs
@@ -39,6 +65,7 @@ class Engine:
         self.model = self._init_model(self.strategy)
         self.generator = ModelGenerator(self.model, batch_size=self.batch_size)
         self.evaluator = self._init_evaluator()
+        self.generator.run_label = self.evaluator.__class__.__name__
 
     def _init_model(self, strategy: object) -> object:
         """Instantiate the model with the configured strategy injected."""
@@ -59,8 +86,58 @@ class Engine:
 
     def run(self):
         """Run the evaluator in either `evaluate()` or callable form."""
-        if hasattr(self.evaluator, "evaluate"):
-            return self.evaluator.evaluate(self.generator)
-        if callable(self.evaluator):
-            return self.evaluator(self.generator)
-        raise TypeError("Evaluator must be callable or define evaluate().")
+        try:
+            self._print_run_summary()
+            if hasattr(self.evaluator, "evaluate"):
+                return self.evaluator.evaluate(self.generator)
+            if callable(self.evaluator):
+                return self.evaluator(self.generator)
+            raise TypeError("Evaluator must be callable or define evaluate().")
+        except Exception as exc:
+            print("\n[error] Evaluation failed.")
+            print("Hint: use HYDRA_FULL_ERROR=1 to see the full stack trace.")
+            raise exc
+
+    def _print_run_summary(self) -> None:
+        model_name = getattr(self.model_cfg, "model_name", None)
+        model_target = getattr(self.model_cfg, "_target_", type(self.model).__name__)
+        device = getattr(self.model, "device", None)
+        dtype = getattr(getattr(self.model, "model", None), "dtype", None)
+
+        strategy = self.strategy
+        strategy_name = strategy.__class__.__name__
+        strategy_fields = {}
+        for key in (
+            "steps",
+            "gen_length",
+            "max_new_tokens",
+            "block_length",
+            "temperature",
+            "cfg_scale",
+            "num_particles",
+            "top_p",
+            "top_k",
+            "alg",
+            "remasking",
+        ):
+            if hasattr(strategy, key):
+                strategy_fields[key] = getattr(strategy, key)
+
+        evaluator = self.evaluator
+        eval_name = evaluator.__class__.__name__
+        eval_fields = {}
+        for key in ("n_few_shots", "max_items", "variants", "n_values"):
+            if hasattr(evaluator, key):
+                eval_fields[key] = getattr(evaluator, key)
+
+        print("\n=== Run Summary ===")
+        print(f"model:    {model_target}")
+        if model_name:
+            print(f"model_id: {model_name}")
+        if device is not None:
+            print(f"device:   {device}")
+        if dtype is not None:
+            print(f"dtype:    {dtype}")
+        print(f"strategy: {strategy_name} {strategy_fields}")
+        print(f"eval:     {eval_name} {eval_fields}")
+        print(f"batch:    {self.batch_size}")

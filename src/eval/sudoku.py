@@ -95,7 +95,6 @@ class SudokuEvaluator:
                 data = data[: self.max_items]
 
             inputs = [self._build_prompt(examples, item) for item in data]
-            print("Example input: ", inputs[0])
 
             generations = generator.generate(inputs)
             generations = [self._clean_generation(g) for g in generations]
@@ -104,7 +103,7 @@ class SudokuEvaluator:
                 sum(self.is_valid_sudoku(item["input"], gen) for item, gen in zip(data, generations))
                 / len(data)
             )
-            print(f"Filled n={n}, Acc: ", acc)
+            print(f"[Sudoku] Accuracy: {acc:.4f}")
 
             if self.prediction_path is not None:
                 write_jsonl(

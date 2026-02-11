@@ -116,7 +116,6 @@ class TripEvaluator:
             splits = item["prompt_5shot"].split("TASK:")
             inputs.append("TASK:".join(splits[:3] + [splits[-1]]))
 
-        print("Example input: ", inputs[0])
         generations = generator.generate(inputs)
         generations = [g.split("<|endoftext|>")[0].split("\n\nTASK")[0] for g in generations]
         if self.prediction_path is not None:

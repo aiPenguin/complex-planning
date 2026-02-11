@@ -84,10 +84,10 @@ class CDEvaluator:
             data = data[: self.max_items]
 
         inputs = [template.format(input=i["input"]) for i in data]
-        print("Example input: ", inputs[0])
         generations = generator.generate(inputs)
         generations = [g.split("<|end_of_text|>")[0].split("\n")[0] for g in generations]
-        print("Acc: ", self._metric([i["input"] for i in data], generations))
+        acc = self._metric([i["input"] for i in data], generations)
+        print(f"[CD] Accuracy: {acc:.4f}")
         if self.prediction_path is not None:
             write_jsonl(
                 [
