@@ -32,17 +32,17 @@ def _validate_log(log: torch.Tensor) -> Tuple[int, int, int, int]:
         raise TypeError(f"Expected torch.Tensor, got {type(log)}")
     if log.ndim != 5 or log.shape[-1] != 2:
         raise ValueError(
-            "Expected log shape [batch, num_particles, gen_len, steps, 2], "
+            "Expected log shape [samples, num_particles, gen_len, steps, 2], "
             f"got {tuple(log.shape)}"
         )
-    batch, num_particles, gen_len, steps, _ = log.shape
+    samples, num_particles, gen_len, steps, _ = log.shape
     if num_particles < 1 or gen_len < 1 or steps < 1:
         raise ValueError(f"Invalid log dimensions: {log.shape}")
-    return batch, num_particles, gen_len, steps
+    return samples, num_particles, gen_len, steps
 
 
 def _state_fractions(states: np.ndarray) -> Dict[str, Dict[str, list]]:
-    """Compute mean/variance of per-batch state fractions across positions."""
+    """Compute mean/variance of per-sample state fractions across positions."""
     steps = states.shape[-1]
     stats: Dict[str, Dict[str, list]] = {
         "masked": {"mean": [], "var": []},
@@ -53,7 +53,7 @@ def _state_fractions(states: np.ndarray) -> Dict[str, Dict[str, list]]:
     for step in range(steps):
         st = states[:, :, step]
         valid = st != -1
-        denom = valid.sum(axis=1)  # per-batch
+        denom = valid.sum(axis=1)  # per-sample
         if denom.size == 0:
             for key in stats:
                 stats[key]["mean"].append(float("nan"))
@@ -86,9 +86,9 @@ def _state_fractions(states: np.ndarray) -> Dict[str, Dict[str, list]]:
 
 def _first_step(states: np.ndarray, predicate: int | None) -> np.ndarray:
     """First step index where predicate matches (or first unmask if None)."""
-    batch, gen_len, steps = states.shape
-    out = np.full((batch, gen_len), -1, dtype=np.int64)
-    for b in range(batch):
+    samples, gen_len, steps = states.shape
+    out = np.full((samples, gen_len), -1, dtype=np.int64)
+    for b in range(samples):
         for i in range(gen_len):
             st = states[b, i]
             if predicate is None:
@@ -111,14 +111,14 @@ def _histogram(first_steps: np.ndarray, steps: int) -> Dict[str, Any]:
 
 
 def _consensus_stats(tokens: np.ndarray) -> Tuple[list, list, list]:
-    """Consensus stats (mean/p10/p90) over batch+positions per step."""
-    batch, num_particles, gen_len, steps = tokens.shape
+    """Consensus stats (mean/p10/p90) over samples+positions per step."""
+    samples, num_particles, gen_len, steps = tokens.shape
     mean_cons = []
     p10_cons = []
     p90_cons = []
     for step in range(steps):
         vals = []
-        for b in range(batch):
+        for b in range(samples):
             for i in range(gen_len):
                 tok = tokens[b, :, i, step]
                 valid = tok != -1
@@ -138,8 +138,8 @@ def _consensus_stats(tokens: np.ndarray) -> Tuple[list, list, list]:
 
 
 def _token_change_rate(tokens: np.ndarray) -> list:
-    """Fraction of tokens that changed vs previous step (batch mean)."""
-    batch, num_particles, gen_len, steps = tokens.shape
+    """Fraction of tokens that changed vs previous step (sample mean)."""
+    samples, num_particles, gen_len, steps = tokens.shape
     rates = [0.0]
     for step in range(1, steps):
         cur = tokens[:, :, :, step]
@@ -157,10 +157,10 @@ def _token_change_rate(tokens: np.ndarray) -> list:
 
 
 def _consensus_heatmap(tokens: np.ndarray) -> np.ndarray:
-    """Per-position consensus heatmap averaged over batch."""
-    batch, num_particles, gen_len, steps = tokens.shape
-    per_batch = np.full((batch, gen_len, steps), np.nan, dtype=np.float32)
-    for b in range(batch):
+    """Per-position consensus heatmap averaged over samples."""
+    samples, num_particles, gen_len, steps = tokens.shape
+    per_sample = np.full((samples, gen_len, steps), np.nan, dtype=np.float32)
+    for b in range(samples):
         for step in range(steps):
             for i in range(gen_len):
                 tok = tokens[b, :, i, step]
@@ -168,19 +168,19 @@ def _consensus_heatmap(tokens: np.ndarray) -> np.ndarray:
                 if not valid.any():
                     continue
                 _, counts = np.unique(tok[valid], return_counts=True)
-                per_batch[b, i, step] = float(counts.max() / valid.sum())
-    return np.nanmean(per_batch, axis=0)
+                per_sample[b, i, step] = float(counts.max() / valid.sum())
+    return np.nanmean(per_sample, axis=0)
 
 
 def _state_heatmap(states: np.ndarray) -> np.ndarray:
-    """Per-position state heatmap averaged over batch (0..2 expected values)."""
+    """Per-position state heatmap averaged over samples (0..2 expected values)."""
     out = states.copy().astype(np.float32)
     out[out < 0] = np.nan
     return np.nanmean(out, axis=0)
 
 
 def _state_prob_heatmaps(states: np.ndarray) -> Dict[str, np.ndarray]:
-    """Per-position probability heatmaps for each state (batch mean)."""
+    """Per-position probability heatmaps for each state (sample mean)."""
     out: Dict[str, np.ndarray] = {}
     for label, value in (
         ("masked", STATE_MASKED),
@@ -233,7 +233,7 @@ def _write_plots(
     import matplotlib.pyplot as plt
 
     x = np.arange(steps)
-    batch, num_particles, gen_len = dims
+    samples, num_particles, gen_len = dims
 
     # State fractions
     plt.figure(figsize=(8, 4))
@@ -247,7 +247,7 @@ def _write_plots(
     plt.xlabel("step")
     plt.ylabel("fraction")
     plt.title(
-        f"Token State Fractions (mean ± std)  B={batch} P={num_particles} G={gen_len}"
+        f"Token State Fractions (mean ± std)  S={samples} P={num_particles} G={gen_len}"
     )
     plt.legend()
     plt.tight_layout()
@@ -263,7 +263,7 @@ def _write_plots(
     plt.xlabel("step")
     plt.ylabel("fraction")
     plt.title(
-        f"Consensus and Token Change Rate (mean over batch)  B={batch} P={num_particles} G={gen_len}"
+        f"Consensus and Token Change Rate (mean over samples)  S={samples} P={num_particles} G={gen_len}"
     )
     plt.legend()
     plt.tight_layout()
@@ -277,7 +277,7 @@ def _write_plots(
     plt.xlabel("step")
     plt.ylabel("count")
     plt.title(
-        f"First Freeze/Unmask Step Histogram  B={batch} P={num_particles} G={gen_len}"
+        f"First Freeze/Unmask Step Histogram  S={samples} P={num_particles} G={gen_len}"
     )
     plt.legend()
     plt.tight_layout()
@@ -298,7 +298,7 @@ def _write_plots(
         plt.colorbar(label="consensus")
         plt.xlabel("step")
         plt.ylabel("gen position")
-        plt.title("Consensus Heatmap (mean over batch)")
+        plt.title("Consensus Heatmap (mean over samples)")
         plt.tight_layout()
         plt.savefig(out_dir / "consensus_heatmap.png", dpi=160)
         plt.close()
@@ -319,7 +319,7 @@ def _write_plots(
         cbar.ax.set_yticklabels(["masked", "provisional", "frozen"])
         plt.xlabel("step")
         plt.ylabel("gen position")
-        plt.title("Token State Heatmap (mean over batch)")
+        plt.title("Token State Heatmap (mean over samples)")
         plt.tight_layout()
         plt.savefig(out_dir / "state_heatmap.png", dpi=160)
         plt.close()
@@ -339,7 +339,7 @@ def _write_plots(
             ax.set_xlabel("step")
         axes[0].set_ylabel("gen position")
         fig.colorbar(img, ax=axes, shrink=0.85, pad=0.02, label="fraction")
-        fig.suptitle("Token State Fractions by Position (mean over batch)")
+        fig.suptitle("Token State Fractions by Position (mean over samples)")
         fig.savefig(out_dir / "state_prob_heatmaps.png", dpi=160)
         plt.close(fig)
 
@@ -348,7 +348,12 @@ def main() -> int:
     parser = argparse.ArgumentParser(
         description="Analyze and visualize PACE particle logs."
     )
-    parser.add_argument("--log", required=True, type=Path, help="Path to pace_particles.pt")
+    parser.add_argument(
+        "--log",
+        required=True,
+        type=Path,
+        help="Path to pace_particles.pt",
+    )
     parser.add_argument(
         "--out",
         type=Path,
@@ -368,17 +373,21 @@ def main() -> int:
     )
     args = parser.parse_args()
 
+    if args.log.is_dir():
+        raise ValueError("--log must be a .pt file; directory input is not supported.")
     log = _safe_torch_load(args.log)
-    batch, num_particles, gen_len, steps = _validate_log(log)
+    samples, num_particles, gen_len, steps = _validate_log(log)
 
     if args.batch_index is not None:
-        if args.batch_index < 0 or args.batch_index >= batch:
-            raise ValueError(f"batch-index {args.batch_index} out of range [0, {batch - 1}]")
+        if args.batch_index < 0 or args.batch_index >= samples:
+            raise ValueError(
+                f"batch-index {args.batch_index} out of range [0, {samples - 1}]"
+            )
         log = log[args.batch_index : args.batch_index + 1]
-        batch = 1
+        samples = 1
 
-    states = log[..., 0].cpu().numpy()  # [B, P, G, S]
-    tokens = log[..., 1].cpu().numpy()  # [B, P, G, S]
+    states = log[..., 0].cpu().numpy()  # [S, P, G, T]
+    tokens = log[..., 1].cpu().numpy()  # [S, P, G, T]
     states0 = states[:, 0, :, :]  # token state identical across particles
 
     state_fracs = _state_fractions(states0)
@@ -393,12 +402,12 @@ def main() -> int:
     summary: Dict[str, Any] = {
         "log_path": str(args.log),
         "dimensions": {
-            "batch": batch,
+            "samples": samples,
             "num_particles": num_particles,
             "gen_len": gen_len,
             "steps": steps,
         },
-        "averaging": "per-batch mean/variance across positions",
+        "averaging": "per-sample mean/variance across positions",
         "state_fractions": state_fracs,
         "consensus": {
             "mean": consensus_mean,
@@ -409,9 +418,10 @@ def main() -> int:
         "first_freeze_hist": freeze_hist,
         "first_unmask_hist": unmask_hist,
         "field_notes": {
-            "dimensions": "Tensor dimensions after optional batch slicing.",
-            "state_fractions": "Per-step mean/variance of per-batch state fractions.",
-            "consensus": "Per-step consensus stats over batch+positions.",
+            "log_path": "Source log file.",
+            "dimensions": "Tensor dimensions after optional sample slicing.",
+            "state_fractions": "Per-step mean/variance of per-sample state fractions.",
+            "consensus": "Per-step consensus stats over samples+positions.",
             "token_change_rate": "Per-step fraction of tokens that changed vs previous step.",
             "first_freeze_hist": "Histogram of first step when a position becomes frozen.",
             "first_unmask_hist": "Histogram of first step when a position is no longer masked.",
@@ -435,13 +445,13 @@ def main() -> int:
         print(f"Wrote summary to {summary_path}")
         return 0
 
-    consensus_heat = _consensus_heatmap(tokens) if batch > 0 else None
-    state_heat = _state_heatmap(states0) if batch > 0 else None
-    state_probs = _state_prob_heatmaps(states0) if batch > 0 else None
+    consensus_heat = _consensus_heatmap(tokens) if samples > 0 else None
+    state_heat = _state_heatmap(states0) if samples > 0 else None
+    state_probs = _state_prob_heatmaps(states0) if samples > 0 else None
     _write_plots(
         out_dir=out_dir,
         steps=steps,
-        dims=(batch, num_particles, gen_len),
+        dims=(samples, num_particles, gen_len),
         state_fracs=state_fracs,
         consensus_mean=consensus_mean,
         consensus_p10=consensus_p10,
