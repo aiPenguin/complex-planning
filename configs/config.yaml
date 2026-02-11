@@ -3,6 +3,8 @@ defaults:
   - strategy: llada_native
   - eval: sudoku
 
+batch_size: null
+
 hydra:
   run:
     dir: output/${now:%Y-%m-%d}/${now:%H-%M-%S}

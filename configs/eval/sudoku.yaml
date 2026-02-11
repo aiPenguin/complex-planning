@@ -3,4 +3,5 @@ data_dir: data
 n_values:
   - 10
 n_few_shots: 8
+max_items: null
 prediction_path: null

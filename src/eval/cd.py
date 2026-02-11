@@ -17,6 +17,7 @@ class CDEvaluator:
         data_dir: str = "data",
         variants: Iterable[int] | int = (3, 4, 5),
         n_few_shots: int = 8,
+        max_items: int | None = None,
         prediction_path: str | None = None,
     ) -> None:
         if isinstance(variants, int):
@@ -25,6 +26,7 @@ class CDEvaluator:
             self.variants = list(variants)
         self.data_dir = data_dir
         self.n_few_shots = n_few_shots
+        self.max_items = max_items
         self.prediction_path = prediction_path
 
     @staticmethod
@@ -78,6 +80,8 @@ class CDEvaluator:
         data = read_jsonl(f"{self.data_dir}/cd{variant}_test.jsonl")
         template = self._build_template(data, variant)
         data = data[self.n_few_shots :]
+        if self.max_items is not None:
+            data = data[: self.max_items]
 
         inputs = [template.format(input=i["input"]) for i in data]
         print("Example input: ", inputs[0])

@@ -17,6 +17,7 @@ class SudokuEvaluator:
         data_dir: str = "data",
         n_values: Iterable[int] | int = (10,),
         n_few_shots: int = 8,
+        max_items: int | None = None,
         prediction_path: str | None = None,
     ) -> None:
         if isinstance(n_values, int):
@@ -25,6 +26,7 @@ class SudokuEvaluator:
             self.n_values = list(n_values)
         self.data_dir = data_dir
         self.n_few_shots = n_few_shots
+        self.max_items = max_items
         self.prediction_path = prediction_path
 
     @staticmethod
@@ -89,6 +91,8 @@ class SudokuEvaluator:
             data = read_jsonl(f"{self.data_dir}/sudoku_4x4_{n}.jsonl")
             examples = data[: self.n_few_shots]
             data = data[self.n_few_shots :]
+            if self.max_items is not None:
+                data = data[: self.max_items]
 
             inputs = [self._build_prompt(examples, item) for item in data]
             print("Example input: ", inputs[0])

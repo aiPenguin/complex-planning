@@ -15,9 +15,11 @@ class TripEvaluator:
     def __init__(
         self,
         data_dir: str = "data",
+        max_items: int | None = None,
         prediction_path: str | None = None,
     ) -> None:
         self.data_dir = data_dir
+        self.max_items = max_items
         self.prediction_path = prediction_path
 
     @staticmethod
@@ -106,6 +108,8 @@ class TripEvaluator:
         """Run generation and evaluate the resulting trip plans."""
         with open(f"{self.data_dir}/trip_planning.json") as f:
             data = json.load(f)
+        if self.max_items is not None:
+            data = dict(list(data.items())[: self.max_items])
 
         inputs = []
         for item in data.values():

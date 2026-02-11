@@ -9,27 +9,41 @@ from omegaconf import DictConfig
 class ModelGenerator:
     """Thin adapter so evaluators only rely on a `generate()` method."""
     model: object
+    batch_size: int | None = None
 
     def generate(self, prompts: List[str]) -> List[str]:
-        return self.model.generate(prompts)
+        if self.batch_size is None:
+            return self.model.generate(prompts)
+
+        outputs: List[str] = []
+        for start in range(0, len(prompts), self.batch_size):
+            batch = prompts[start : start + self.batch_size]
+            outputs.extend(self.model.generate(batch))
+        return outputs
 
 
 class Engine:
     """Hydra-wired orchestrator that builds model, strategy, and evaluator."""
     def __init__(
-        self, model_cfg: DictConfig, strategy_cfg: DictConfig, eval_cfg: DictConfig
+        self,
+        model_cfg: DictConfig,
+        strategy_cfg: DictConfig,
+        eval_cfg: DictConfig,
+        batch_size: int | None = None,
     ) -> None:
         self.model_cfg = model_cfg
         self.strategy_cfg = strategy_cfg
         self.eval_cfg = eval_cfg
+        self.batch_size = batch_size
         self.strategy = self._init_strategy()
         self.model = self._init_model(self.strategy)
-        self.generator = ModelGenerator(self.model)
+        self.generator = ModelGenerator(self.model, batch_size=self.batch_size)
         self.evaluator = self._init_evaluator()
 
     def _init_model(self, strategy: object) -> object:
         """Instantiate the model with the configured strategy injected."""
-        return instantiate(self.model_cfg, strategy=strategy)
+        # Keep the strategy instance intact; Hydra otherwise converts it to DictConfig.
+        return instantiate(self.model_cfg, strategy=strategy, _convert_="object")
 
     def _init_strategy(self) -> object:
         """Instantiate the unmasking strategy used by the model."""

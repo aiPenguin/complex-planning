@@ -1,3 +1,4 @@
 _target_: src.eval.trip.TripEvaluator
 data_dir: data
+max_items: null
 prediction_path: null
