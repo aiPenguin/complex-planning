@@ -9,6 +9,13 @@ import torch
 from transformers import AutoModel, AutoTokenizer
 
 from src.strategies.base import UnmaskingStrategy
+from src.utils.pace_utils import (
+    is_pace_strategy,
+    init_pace_state,
+    expand_for_particles,
+    finalize_particles,
+    use_particle_expansion,
+)
 
 
 class LLaDA:
@@ -144,8 +151,8 @@ class LLaDA:
         prompt = input_ids
         device = prompt.device
         steps = self.strategy.steps
-        gen_length = self.strategy.gen_length
-        block_length = self.strategy.block_length
+        gen_length = getattr(self.strategy, "max_new_tokens", None) or self.strategy.gen_length
+        block_length = getattr(self.strategy, "block_length", gen_length)
         mask_id = self.strategy.mask_id
         cfg_scale = self.strategy.cfg_scale
 
@@ -172,6 +179,23 @@ class LLaDA:
 
         prompt_index = x != mask_id
 
+        is_pace = is_pace_strategy(self.strategy)
+        use_particles = use_particle_expansion(self.strategy)
+        if is_pace:
+            init_pace_state(
+                self.strategy,
+                batch_size=prompt.shape[0],
+                seq_len=x.shape[1],
+                prompt_len=prompt.shape[1],
+                mask_id=mask_id,
+                device=device,
+            )
+        if use_particles:
+            x, attention_mask = expand_for_particles(self.strategy, x, attention_mask)
+            prompt_index = prompt_index.repeat_interleave(
+                self.strategy.num_particles, dim=0
+            )
+
         if gen_length % block_length != 0:
             raise ValueError("gen_length must be divisible by block_length.")
         num_blocks = gen_length // block_length
@@ -180,6 +204,7 @@ class LLaDA:
             raise ValueError("steps must be divisible by the number of blocks.")
         steps_per_block = steps // num_blocks
 
+        early_stop = False
         for num_block in range(num_blocks):
             start = prompt.shape[1] + num_block * block_length
             end = prompt.shape[1] + (num_block + 1) * block_length
@@ -205,14 +230,32 @@ class LLaDA:
                 else:
                     logits = self.model(x, attention_mask=attention_mask).logits
 
-                x = self.strategy.unmask(
-                    x=x,
-                    logits=logits,
-                    mask_index=mask_index,
-                    block_end=end,
-                    num_transfer_tokens=num_transfer_tokens[:, i],
-                )
+                if is_pace:
+                    x = self.strategy.unmask(
+                        x=x,
+                        logits=logits,
+                        mask_index=mask_index,
+                        block_end=end,
+                        num_transfer_tokens=num_transfer_tokens[:, i],
+                        step=i,
+                        steps=steps_per_block,
+                    )
+                    if self.strategy.should_stop():
+                        early_stop = True
+                        break
+                else:
+                    x = self.strategy.unmask(
+                        x=x,
+                        logits=logits,
+                        mask_index=mask_index,
+                        block_end=end,
+                        num_transfer_tokens=num_transfer_tokens[:, i],
+                    )
+            if early_stop:
+                break
 
+        if is_pace and hasattr(self.strategy, "finalize"):
+            return finalize_particles(self.strategy, x)
         return x
 
     def __call__(self, prompts: Sequence[str] | str) -> List[str]:

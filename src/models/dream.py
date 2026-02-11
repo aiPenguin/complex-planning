@@ -10,6 +10,13 @@ from torch.nn import functional as F
 from transformers import AutoModel, AutoTokenizer
 
 from src.utils.dream_utils import DreamGenerationMixin, DreamModelOutput
+from src.utils.pace_utils import (
+    is_pace_strategy,
+    init_pace_state,
+    expand_for_particles,
+    finalize_particles,
+    use_particle_expansion,
+)
 
 
 class Dream(DreamGenerationMixin):
@@ -129,7 +136,8 @@ class Dream(DreamGenerationMixin):
         output = self.diffusion_generate(
             input_ids,
             attention_mask=attention_mask,
-            max_new_tokens=self.strategy.max_new_tokens,
+            max_new_tokens=getattr(self.strategy, "max_new_tokens", None)
+            or getattr(self.strategy, "gen_length", None),
             steps=self.strategy.steps,
             temperature=self.strategy.temperature,
             top_p=self.strategy.top_p,
@@ -164,8 +172,27 @@ class Dream(DreamGenerationMixin):
         steps = generation_config.steps
         eps = generation_config.eps
 
+        is_pace = is_pace_strategy(self.strategy)
+        use_particles = use_particle_expansion(self.strategy)
+        base_batch = input_ids.shape[0]
+        prompt_len = input_ids.shape[1]
+        if use_particles:
+            input_ids, attention_mask = expand_for_particles(
+                self.strategy, input_ids, attention_mask
+            )
+
         histories = [] if (return_dict_in_generate and output_history) else None
         x = F.pad(input_ids, (0, max_length - input_ids.shape[1]), value=mask_token_id)
+
+        if is_pace:
+            init_pace_state(
+                self.strategy,
+                batch_size=base_batch,
+                seq_len=max_length,
+                prompt_len=prompt_len,
+                mask_id=mask_token_id,
+                device=x.device,
+            )
 
         if attention_mask is not None and torch.any(attention_mask == 0.0):
             attention_mask = F.pad(attention_mask, (0, max_length - attention_mask.shape[1]), value=1.0)
@@ -202,6 +229,12 @@ class Dream(DreamGenerationMixin):
             x = generation_tokens_hook_func(i, x, logits)
             if histories is not None:
                 histories.append(x.clone())
+
+            if is_pace and self.strategy.should_stop():
+                break
+
+        if is_pace and hasattr(self.strategy, "finalize"):
+            x = finalize_particles(self.strategy, x)
 
         if return_dict_in_generate:
             return DreamModelOutput(
