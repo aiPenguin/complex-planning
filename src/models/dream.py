@@ -13,6 +13,7 @@ from src.utils.dream_utils import DreamGenerationMixin, DreamModelOutput
 
 
 class Dream(DreamGenerationMixin):
+    """Wrapper that exposes Dream diffusion decoding via `generate()`."""
     def __init__(
         self,
         model_name: str = "Dream-org/Dream-v0-Instruct-7B",
@@ -87,6 +88,7 @@ class Dream(DreamGenerationMixin):
         return mapping[dtype_key]
 
     def _format_prompts(self, prompts: Sequence[str]) -> List[str]:
+        """Apply the tokenizer chat template when enabled."""
         if not self.use_chat_template:
             return list(prompts)
         messages = [{"role": "user", "content": prompt} for prompt in prompts]
@@ -103,6 +105,7 @@ class Dream(DreamGenerationMixin):
         return self.model(input_ids, attention_mask=attention_mask, tok_idx=tok_idx)
 
     def generate(self, prompts: Sequence[str] | str) -> List[str]:
+        """Run diffusion generation and decode the completion portion."""
         if isinstance(prompts, str):
             prompt_list = [prompts]
         else:
@@ -153,6 +156,7 @@ class Dream(DreamGenerationMixin):
         generation_tokens_hook_func,
         generation_logits_hook_func,
     ):
+        """Dream-style diffusion loop, mirroring HF generation hooks."""
         output_history = generation_config.output_history
         return_dict_in_generate = generation_config.return_dict_in_generate
         max_length = generation_config.max_length

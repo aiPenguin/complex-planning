@@ -12,6 +12,7 @@ from src.strategies.base import UnmaskingStrategy
 
 
 class LLaDA:
+    """Wrapper that exposes LLaDA diffusion decoding via `generate()`."""
     def __init__(
         self,
         model_name: str = "GSAI-ML/LLaDA-8B-Instruct",
@@ -78,6 +79,7 @@ class LLaDA:
         return mapping[dtype_key]
 
     def _format_prompts(self, prompts: Sequence[str]) -> List[str]:
+        """Apply the tokenizer chat template when enabled."""
         if not self.use_chat_template:
             return list(prompts)
         messages = [{"role": "user", "content": prompt} for prompt in prompts]
@@ -92,6 +94,7 @@ class LLaDA:
 
     @staticmethod
     def _get_num_transfer_tokens(mask_index: torch.Tensor, steps: int) -> torch.Tensor:
+        """Evenly split masked tokens across diffusion steps."""
         mask_num = mask_index.sum(dim=1, keepdim=True)
         base = mask_num // steps
         remainder = mask_num % steps
@@ -137,6 +140,7 @@ class LLaDA:
         input_ids: torch.Tensor,
         attention_mask: torch.Tensor | None = None,
     ) -> torch.Tensor:
+        """Run the block-wise diffusion loop and return full token ids."""
         prompt = input_ids
         device = prompt.device
         steps = self.strategy.steps
@@ -186,6 +190,7 @@ class LLaDA:
                 mask_index = x == mask_id
 
                 if cfg_scale > 0.0:
+                    # Classifier-free guidance via conditional/unconditional logits.
                     un_x = x.clone()
                     un_x[prompt_index] = mask_id
                     x_ = torch.cat([x, un_x], dim=0)

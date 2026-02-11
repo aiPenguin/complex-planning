@@ -4,6 +4,7 @@ import torch
 
 
 class UnmaskingStrategy(Protocol):
+    """Protocol for strategy objects that update masked token positions."""
     steps: int
     gen_length: int
     block_length: int

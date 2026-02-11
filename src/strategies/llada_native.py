@@ -12,6 +12,7 @@ from src.strategies.base import UnmaskingStrategy
 
 @dataclass
 class LLaDANativeStrategy(UnmaskingStrategy):
+    """Native LLaDA unmasking loop parameters and update step."""
     steps: int = 128
     gen_length: int = 128
     block_length: int = 128
@@ -25,6 +26,7 @@ class LLaDANativeStrategy(UnmaskingStrategy):
     confidence_eos_eot_inf: bool = False
 
     def _add_gumbel_noise(self, logits: torch.Tensor) -> torch.Tensor:
+        """Optionally apply Gumbel noise for stochastic sampling."""
         if self.temperature == 0:
             return logits
         logits = logits.to(torch.float64)
@@ -71,6 +73,7 @@ class LLaDANativeStrategy(UnmaskingStrategy):
             k = int(num_transfer_tokens[j].item())
             if k <= 0:
                 continue
+            # Select the top-k confident positions in this batch row.
             _, select_index = torch.topk(confidence[j], k=k)
             transfer_index[j, select_index] = True
         x[transfer_index] = x0[transfer_index]

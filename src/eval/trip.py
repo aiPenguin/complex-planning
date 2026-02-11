@@ -11,6 +11,7 @@ from src.utils.eval_utils import write_jsonl
 
 
 class TripEvaluator:
+    """Evaluates trip-planning outputs via exact-match itinerary checks."""
     def __init__(
         self,
         data_dir: str = "data",
@@ -21,6 +22,7 @@ class TripEvaluator:
 
     @staticmethod
     def _parse_response(response: str) -> list[tuple[str, int]]:
+        """Parse model output into (city, days) tuples; returns [] on failure."""
         pattern_visit = r"\d+-\d+"
         pattern_flight = r".*Day (\d+).*from (\w+) to (\w+)"
         pattern_days = r"European cities for (\d+) days"
@@ -63,6 +65,7 @@ class TripEvaluator:
 
     @staticmethod
     def _compute_example_score(cities: str, durations: str, parsed_plan: list[Any]) -> float:
+        """Compute strict exact-match score for a single example."""
         stays = [x for x in cities.split("**") if x]
         days = [int(x) for x in durations.split("**") if x]
         num_stays = min(len(stays), len(parsed_plan))
@@ -87,6 +90,7 @@ class TripEvaluator:
         return hard_acc
 
     def _metric(self, data: dict, preds: list[str]) -> None:
+        """Aggregate accuracy and print summary statistics."""
         cities, durations, responses = [], [], []
         sample_count = 0
         for item, pred in zip(data.values(), preds):
@@ -99,6 +103,7 @@ class TripEvaluator:
         print(f"EM Accuracy of {sample_count} samples: {hard_acc}")
 
     def evaluate(self, generator) -> None:
+        """Run generation and evaluate the resulting trip plans."""
         with open(f"{self.data_dir}/trip_planning.json") as f:
             data = json.load(f)
 

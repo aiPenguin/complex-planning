@@ -11,6 +11,7 @@ from src.utils.eval_utils import read_jsonl, write_jsonl
 
 
 class SudokuEvaluator:
+    """Evaluates 4x4 Sudoku completions via exact validity checks."""
     def __init__(
         self,
         data_dir: str = "data",
@@ -28,6 +29,7 @@ class SudokuEvaluator:
 
     @staticmethod
     def is_valid_sudoku(input_grid: str, prediction: str) -> bool:
+        """Validate that the prediction solves the 4x4 Sudoku with given clues."""
         prediction = prediction[: len(input_grid)]
         input_array = np.array([list(map(int, row)) for row in input_grid.strip().split("\n")])
         try:
@@ -63,6 +65,7 @@ class SudokuEvaluator:
         return True
 
     def _build_prompt(self, examples: List[dict], item: dict) -> str:
+        """Assemble a few-shot prompt from examples and a target item."""
         template = (
             "Fill the positions where the values are 0 in a 4x4 grid with digits 1-4 so "
             "that each column, each row, and each of the four 2x2 subgrids that compose "
@@ -75,11 +78,13 @@ class SudokuEvaluator:
         return template.format(input=item["input"])
 
     def _clean_generation(self, text: str) -> str:
+        """Strip special tokens and whitespace from model output."""
         cleaned = text.split("<|endoftext|>")[0]
         cleaned = cleaned.split("\n\n")[0]
         return cleaned.replace(" ", "")
 
     def evaluate(self, generator) -> None:
+        """Run generation and print accuracy for each configured dataset split."""
         for n in self.n_values:
             data = read_jsonl(f"{self.data_dir}/sudoku_4x4_{n}.jsonl")
             examples = data[: self.n_few_shots]

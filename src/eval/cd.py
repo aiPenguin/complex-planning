@@ -11,6 +11,7 @@ from src.utils.eval_utils import read_jsonl, write_jsonl
 
 
 class CDEvaluator:
+    """Evaluates Countdown-style arithmetic reasoning outputs."""
     def __init__(
         self,
         data_dir: str = "data",
@@ -28,12 +29,14 @@ class CDEvaluator:
 
     @staticmethod
     def _check_eq(left_str: str, right_str: str) -> bool:
+        """Check a simple binary arithmetic equation in string form."""
         left_matches = re.match(r"(\d+)([+\-*/])(\d+)", left_str)
         if left_matches:
             return eval(left_str) == float(right_str)
         return False
 
     def _metric(self, inputs: List[str], preds: List[str]) -> float:
+        """Compute exact-match accuracy for Countdown predictions."""
         cor = 0
         for query, pred in zip(inputs, preds):
             subequations = pred.split(",")
@@ -61,6 +64,7 @@ class CDEvaluator:
         return cor / len(preds)
 
     def _build_template(self, data: list[dict], variant: int) -> str:
+        """Build few-shot prompt template for the given variant size."""
         prefix = (
             f"Given {variant + 1} numbers, use +-*/ to operate over the first {variant} numbers to achieve the last number.\n\n"
         )
@@ -70,6 +74,7 @@ class CDEvaluator:
         return f"{prefix}{shots}\n\nInput: {{input}}\nOutput: "
 
     def _run_variant(self, generator, variant: int) -> None:
+        """Run one variant and optionally write predictions to disk."""
         data = read_jsonl(f"{self.data_dir}/cd{variant}_test.jsonl")
         template = self._build_template(data, variant)
         data = data[self.n_few_shots :]
@@ -89,6 +94,7 @@ class CDEvaluator:
             )
 
     def evaluate(self, generator) -> None:
+        """Evaluate all configured variants."""
         for variant in self.variants:
             self._run_variant(generator, variant)
 

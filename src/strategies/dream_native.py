@@ -11,6 +11,7 @@ from src.utils.dream_utils import sample_tokens
 
 @dataclass
 class DreamNativeStrategy:
+    """Native Dream diffusion unmasking parameters and update step."""
     max_new_tokens: int = 512
     steps: int = 512
     temperature: float = 0.2
@@ -32,6 +33,7 @@ class DreamNativeStrategy:
         steps: int,
         mask_token_id: int,
     ) -> torch.Tensor:
+        """Update masked positions for one diffusion step."""
         if not mask_index.any().item():
             return x
 
