@@ -32,3 +32,8 @@ r0: 0.01
 ve_quantile_hi: 0.9
 s_quantile_lo: 0.1
 early_stop_ve_eps: null
+
+# Particle logging
+log_particles: true
+log_particles_to_cpu: true
+log_particles_filename: pace_particles.pt

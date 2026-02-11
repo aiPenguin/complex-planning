@@ -192,6 +192,7 @@ class Dream(DreamGenerationMixin):
                 prompt_len=prompt_len,
                 mask_id=mask_token_id,
                 device=x.device,
+                total_steps=steps,
             )
 
         if attention_mask is not None and torch.any(attention_mask == 0.0):

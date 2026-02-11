@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, List
 import textwrap
@@ -7,7 +7,13 @@ from hydra.utils import instantiate
 from omegaconf import DictConfig
 from hydra.core.hydra_config import HydraConfig
 from tqdm import tqdm
+import torch
 
+from src.utils.pace_utils import (
+    consume_strategy_particle_log,
+    append_particle_log,
+    finalize_particle_logs,
+)
 
 @dataclass
 class ModelGenerator:
@@ -16,6 +22,7 @@ class ModelGenerator:
     batch_size: int | None = None
     run_label: str | None = None
     sample_max_chars: int = 600
+    _particle_logs: List[torch.Tensor] = field(default_factory=list, init=False, repr=False)
 
     def _format_sample(self, text: str) -> str:
         preview = text.replace("\r\n", "\n").replace("\r", "\n")
@@ -43,7 +50,9 @@ class ModelGenerator:
             tqdm.write(textwrap.indent(sample, "  "))
 
         if self.batch_size is None:
-            return self.model.generate(prompts)
+            outputs = self.model.generate(prompts)
+            self._record_particle_log()
+            return outputs
 
         outputs: List[str] = []
         total = len(prompts)
@@ -52,8 +61,15 @@ class ModelGenerator:
         for start in tqdm(batch_iter, total=num_batches, desc="generate", unit="batch"):
             batch = prompts[start : start + self.batch_size]
             outputs.extend(self.model.generate(batch))
+            self._record_particle_log()
         return outputs
 
+    def _record_particle_log(self) -> None:
+        log = consume_strategy_particle_log(self.model)
+        append_particle_log(self._particle_logs, log)
+
+    def consume_particle_log(self) -> torch.Tensor | None:
+        return finalize_particle_logs(self._particle_logs)
 
 class Engine:
     """Hydra-wired orchestrator that builds model, strategy, and evaluator."""
@@ -71,14 +87,16 @@ class Engine:
         self.strategy = self._init_strategy()
         self.model = self._init_model(self.strategy)
         self.output_dir = self._resolve_output_dir()
-        self.generator = ModelGenerator(self.model, batch_size=self.batch_size)
+        self.generator = ModelGenerator(
+            self.model,
+            batch_size=self.batch_size,
+        )
         self.evaluator = self._init_evaluator()
         self.generator.run_label = self.evaluator.__class__.__name__
         setattr(self.evaluator, "output_dir", str(self.output_dir))
 
     def _init_model(self, strategy: object) -> object:
         """Instantiate the model with the configured strategy injected."""
-        # Keep the strategy instance intact; Hydra otherwise converts it to DictConfig.
         return instantiate(self.model_cfg, strategy=strategy, _convert_="object")
 
     def _init_strategy(self) -> object:
@@ -95,17 +113,10 @@ class Engine:
 
     def run(self):
         """Run the evaluator in either `evaluate()` or callable form."""
-        try:
-            self._print_run_summary()
-            if hasattr(self.evaluator, "evaluate"):
-                return self.evaluator.evaluate(self.generator)
-            if callable(self.evaluator):
-                return self.evaluator(self.generator)
-            raise TypeError("Evaluator must be callable or define evaluate().")
-        except Exception as exc:
-            print("\n[error] Evaluation failed.")
-            print("Hint: use HYDRA_FULL_ERROR=1 to see the full stack trace.")
-            raise exc
+        self._print_run_summary()
+        result = self.evaluator.evaluate(self.generator)
+        self._save_particle_log()
+        return result
 
     def _print_run_summary(self) -> None:
         model_name = getattr(self.model_cfg, "model_name", None)
@@ -162,3 +173,12 @@ class Engine:
             fallback = Path("output") / "runs" / "unknown_run"
             fallback.mkdir(parents=True, exist_ok=True)
             return fallback
+
+    def _save_particle_log(self) -> None:
+        log = self.generator.consume_particle_log()
+        if log is None:
+            return
+        filename = getattr(self.strategy, "log_particles_filename", "pace_particles.pt")
+        path = Path(self.output_dir) / filename
+        torch.save(log, path)
+        print(f"[particle_log] saved: {path}")

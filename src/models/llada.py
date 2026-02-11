@@ -34,7 +34,6 @@ class LLaDA:
         if strategy is None:
             raise ValueError("LLaDA requires an unmasking strategy instance.")
         self._validate_strategy(strategy)
-
         self.strategy = strategy
         self.device = torch.device(device)
         self.model = AutoModel.from_pretrained(
@@ -189,6 +188,7 @@ class LLaDA:
                 prompt_len=prompt.shape[1],
                 mask_id=mask_id,
                 device=device,
+                total_steps=steps,
             )
         if use_particles:
             x, attention_mask = expand_for_particles(self.strategy, x, attention_mask)

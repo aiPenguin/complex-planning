@@ -5,6 +5,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 import math
+from pathlib import Path
 from typing import Tuple
 
 import torch
@@ -54,8 +55,14 @@ class PACEStrategy:
     eot_token_id: int = 126348
     logits_eos_inf: bool = False
     confidence_eos_eot_inf: bool = False
-
+    
     supports_pace_flow_dyn: bool = field(default=True, init=False)
+
+    # Log
+    batch_particle_log: torch.Tensor | None = field(default=None, init=False, repr=False)
+    log_particles: bool = False
+    log_particles_to_cpu: bool = True
+    log_particles_filename: str = "pace_particles.pt"
 
     # Internal state (initialized via reset_state)
     _token_state: torch.Tensor | None = field(default=None, init=False, repr=False)
@@ -88,6 +95,7 @@ class PACEStrategy:
         prompt_len: int,
         mask_id: int,
         device: torch.device,
+        total_steps: int,
     ) -> None:
         """Initialize token state for a new generation run."""
         self._batch_size = batch_size
@@ -114,6 +122,17 @@ class PACEStrategy:
         self._last_mode_score = None
         self._last_particle_scores = None
         self._last_mean_ve = None
+        if self.log_particles:
+            log_device = torch.device("cpu") if self.log_particles_to_cpu else device
+            gen_length = max(seq_len - prompt_len, 0)
+            self.batch_particle_log = torch.full(
+                (batch_size, self.num_particles, gen_length, total_steps, 2),
+                -1,
+                dtype=torch.int64,
+                device=log_device,
+            )
+        else:
+            self.batch_particle_log = None
 
     def should_stop(self) -> bool:
         """Check if all generation tokens are frozen or VE is low."""
@@ -230,8 +249,41 @@ class PACEStrategy:
             gen_mask=self._generation_mask(device=x.device),
         )
 
+        if self.log_particles:
+            step_idx = self._global_step
+            if step_idx < self.batch_particle_log.shape[3]:
+                gen_start = self._prompt_len
+                gen_end = self._seq_len
+                if gen_start < gen_end:
+                    token_state = self._token_state[:, gen_start:gen_end]
+                    token_state = token_state.unsqueeze(1).expand(
+                        batch, num_particles, gen_end - gen_start
+                    )
+                    y_tokens_log = y_tokens[:, :, gen_start:gen_end].detach()
+                    if self.log_particles_to_cpu:
+                        token_state = token_state.cpu()
+                        y_tokens_log = y_tokens_log.cpu()
+                    self.batch_particle_log[:, :, :, step_idx, 0] = token_state
+                    self.batch_particle_log[:, :, :, step_idx, 1] = y_tokens_log
+
         self._global_step += 1
         return next_tokens
+
+    def save_particle_log(self, output_dir: str) -> str | None:
+        """Save logged particle tokens to a .pt file in output_dir."""
+        if not self.log_particles or self.batch_particle_log is None:
+            return None
+        path = Path(output_dir) / self.log_particles_filename
+        torch.save(self.batch_particle_log, path)
+        return str(path)
+
+    def consume_particle_log(self) -> torch.Tensor | None:
+        """Return the current batch particle log and clear it."""
+        if self.batch_particle_log is None:
+            return None
+        log = self.batch_particle_log
+        self.batch_particle_log = None
+        return log
 
     def finalize(self, x: torch.Tensor) -> torch.Tensor:
         """Collapse particles into a single sequence per batch."""
