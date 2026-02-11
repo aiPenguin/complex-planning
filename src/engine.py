@@ -19,23 +19,28 @@ class ModelGenerator:
 
     def _format_sample(self, text: str) -> str:
         preview = text.replace("\r\n", "\n").replace("\r", "\n")
-        if len(preview) > self.sample_max_chars:
-            preview = preview[: self.sample_max_chars] + "...(truncated)"
-        return preview
+        if len(preview) <= self.sample_max_chars:
+            return preview
+        head_len = self.sample_max_chars // 2
+        tail_len = self.sample_max_chars - head_len
+        head = preview[:head_len]
+        tail = preview[-tail_len:]
+        return f"{head}\n...(truncated)...\n{tail}"
 
     def generate(self, prompts: List[str]) -> List[str]:
         if prompts:
             label = self.run_label or "generate"
             total = len(prompts)
             if self.batch_size is None:
-                print(f"\n[{label}] inputs={total} batch_size=None")
+                tqdm.write(f"\n[{label}] inputs={total} batch_size=None")
             else:
                 num_batches = (total + self.batch_size - 1) // self.batch_size
-                print(
+                tqdm.write(
                     f"\n[{label}] inputs={total} batch_size={self.batch_size} batches={num_batches}"
                 )
             sample = self._format_sample(prompts[0])
-            print("[sample input]\n" + textwrap.indent(sample, "  "))
+            tqdm.write("[sample input]")
+            tqdm.write(textwrap.indent(sample, "  "))
 
         if self.batch_size is None:
             return self.model.generate(prompts)
