@@ -4,6 +4,7 @@ defaults:
   - eval: sudoku
 
 batch_size: 1
+seed: 0
 
 hydra:
   run:

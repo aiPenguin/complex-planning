@@ -10,6 +10,7 @@ def _slug(value: str) -> str:
 
 OmegaConf.register_new_resolver("slug", _slug, replace=True)
 
+from src.utils.seed_utils import seed_everything
 from src.engine import Engine
 
 
@@ -20,7 +21,9 @@ def main(cfg: DictConfig) -> None:
     print(f"model:    {cfg.model._target_} ({cfg.model.model_name})")
     print(f"strategy: {cfg.strategy._target_}")
     print(f"eval:     {cfg.eval._target_}")
-    print(f"batch:    {cfg.batch_size}\n")
+    print(f"batch:    {cfg.batch_size}")
+    print(f"seed:     {cfg.seed}\n")
+    seed_everything(cfg.seed)
     engine = Engine(cfg.model, cfg.strategy, cfg.eval, batch_size=cfg.batch_size)
     engine.run()
 
