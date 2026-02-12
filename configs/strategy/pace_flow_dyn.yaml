@@ -1,39 +1,51 @@
 _target_: src.strategies.pace_flow_dyn.PACEStrategy
 
 # Canonical length knob shared by both models
-max_new_tokens: 128
+max_new_tokens: 128  # 生成长度（若未指定 gen_length）
 
 # Common decoding params
-steps: 128
-temperature: 0.0
-cfg_scale: 0.0
+steps: 128  # 扩散/解码步数
+temperature: 0.0  # 采样温度（LLaDA Gumbel / Dream 采样）
+# Used when temperature=0 and num_particles>1 to diversify particles.
+particle_temperature: 0.7  # 粒子专用温度（temperature=0 时仍可多样化）
+cfg_scale: 0.0  # CFG 强度（LLaDA 用，0 为关闭）
 
 # LLaDA-related params (ignored by Dream)
-block_length: 32
-mask_id: 126336
-eos_token_id: 126081
-eot_token_id: 126348
-logits_eos_inf: false
-confidence_eos_eot_inf: false
+block_length: 32  # LLaDA block 采样长度
+mask_id: 126336  # LLaDA [MASK] token id
+eos_token_id: 126081  # EOS token id
+eot_token_id: 126348  # EOT token id
+logits_eos_inf: false  # 将 EOS logits 置 -inf（logit 级别控制）
+confidence_eos_eot_inf: false  # 将 EOS/EOT 置信度置 -inf（confidence 级别控制）
 
 # Dream-related params (ignored by LLaDA)
-top_p: 0.95
-top_k: null
-alg_temp: 0.0
-eps: 1e-3
+top_p: 0.95  # nucleus sampling
+top_k: null  # top-k sampling（null=关闭）
+alg: pace_flow_dyn  # Dream compatibility (unused in PACE)
+alg_temp: 0.0  # Dream 算法温度（兼容参数）
+eps: 1e-3  # Dream 时间步下界
 
 # PACE-Flow-Dyn hyperparameters
-num_particles: 4
-q0: 0.15
-tau_c_min: 0.70
-tau_c_max: 0.90
-lock: 2
-r0: 0.01
-ve_quantile_hi: 0.9
-s_quantile_lo: 0.1
-early_stop_ve_eps: null
+num_particles: 5  # 粒子数量（>1 才有分歧度/一致性）
+q0: 0.25  # remask 比例基准（P->M）
+tau_c_min: 0.50  # 冻结阈值下限（agreement >= tau_c 才能 F）
+tau_c_max: 0.75  # 冻结阈值上限
+q_schedule: cosine  # remask 调度（linear/cosine/…）
+tau_c_schedule: cosine_decay  # 冻结阈值调度（支持 *_decay）
+mask_schedule: linear  # 目标 mask 曲线调度（控制 M->P 速率）
+tau_c_f_weight: 0.0  # 将冻结比例 f 融入 tau_c 的权重
+freeze_s_quantile: 0.45  # s_score 分位数阈值（替代 median）
+provisional_lock: 2  # P 最少保留步数，防止立刻冻结
+lock: 2  # 冻结后最短锁定步数（避免频繁解冻）
+r0: 0.01  # 解冻比例基准（F->P）
+ve_quantile_hi: 0.9  # 解冻时 ve 高分位阈值
+s_quantile_lo: 0.1  # 解冻时 s_score 低分位阈值
+early_stop_ve_eps: null  # ve 低于阈值时提前停止
+agreement_metric: consensus  # 一致性度量：consensus/pairwise
+use_margin_confidence: true  # 是否使用 margin 置信度
+margin_weight: 0.75  # margin 加权强度
 
 # Particle logging
-log_particles: true
-log_particles_to_cpu: true
-log_particles_filename: pace_particles.pt
+log_particles: true  # 是否记录粒子日志
+log_particles_to_cpu: true  # 是否将日志移到 CPU
+log_particles_filename: pace_particles.pt  # 日志文件名

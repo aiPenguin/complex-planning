@@ -31,6 +31,8 @@ class PACEStrategy:
     temperature: float = 0.0
     cfg_scale: float = 0.0
     mask_id: int = 126336
+    # Particle-only sampling temperature (used when temperature == 0 and num_particles > 1).
+    particle_temperature: float = 0.0
 
     # Dream-related knobs (kept for compatibility)
     top_p: float | None = 0.95
@@ -44,11 +46,20 @@ class PACEStrategy:
     q0: float = 0.15
     tau_c_min: float = 0.70
     tau_c_max: float = 0.90
+    q_schedule: str = "linear"
+    tau_c_schedule: str = "linear"
+    mask_schedule: str = "linear"
+    tau_c_f_weight: float = 0.0
+    freeze_s_quantile: float = 0.5
+    provisional_lock: int = 1
     lock: int = 2
     r0: float = 0.01
     early_stop_ve_eps: float | None = None
     ve_quantile_hi: float = 0.9
     s_quantile_lo: float = 0.1
+    agreement_metric: str = "consensus"
+    use_margin_confidence: bool = False
+    margin_weight: float = 1.0
 
     # LLaDA-specific compatibility flags
     eos_token_id: int = 126081
@@ -67,11 +78,13 @@ class PACEStrategy:
     # Internal state (initialized via reset_state)
     _token_state: torch.Tensor | None = field(default=None, init=False, repr=False)
     _last_freeze: torch.Tensor | None = field(default=None, init=False, repr=False)
+    _last_provisional: torch.Tensor | None = field(default=None, init=False, repr=False)
     _batch_size: int | None = field(default=None, init=False, repr=False)
     _seq_len: int | None = field(default=None, init=False, repr=False)
     _prompt_len: int | None = field(default=None, init=False, repr=False)
     _mask_id: int | None = field(default=None, init=False, repr=False)
     _global_step: int = field(default=0, init=False, repr=False)
+    _total_steps: int = field(default=1, init=False, repr=False)
     _last_mode_tokens: torch.Tensor | None = field(default=None, init=False, repr=False)
     _last_mode_score: torch.Tensor | None = field(default=None, init=False, repr=False)
     _last_particle_scores: torch.Tensor | None = field(default=None, init=False, repr=False)
@@ -103,6 +116,7 @@ class PACEStrategy:
         self._prompt_len = prompt_len
         self._mask_id = mask_id
         self._global_step = 0
+        self._total_steps = max(int(total_steps), 1)
 
         token_state = torch.full(
             (batch_size, seq_len),
@@ -115,6 +129,7 @@ class PACEStrategy:
 
         self._token_state = token_state
         self._last_freeze = torch.full_like(token_state, -10**9)
+        self._last_provisional = torch.full_like(token_state, -10**9)
         if prompt_len > 0:
             self._last_freeze[:, :prompt_len] = 0
 
@@ -187,8 +202,11 @@ class PACEStrategy:
         active_particles = active.unsqueeze(1).expand(batch, num_particles, seq_len)
         y_tokens = x_tokens.clone()
 
+        sample_temp = self._sample_temperature()
         if mode == "llada" and active_particles.any().item():
-            logits_to_sample = self._apply_llada_logit_controls(logits)
+            logits_to_sample = self._apply_llada_logit_controls(
+                logits, temperature=sample_temp
+            )
             x0_all = torch.argmax(logits_to_sample, dim=-1)
             y_tokens[active_particles] = x0_all[active_particles]
         elif mode == "dream" and active_particles.any().item():
@@ -196,7 +214,7 @@ class PACEStrategy:
             if flat_logits.numel() > 0:
                 _, sampled = sample_tokens(
                     flat_logits,
-                    temperature=self.temperature,
+                    temperature=sample_temp,
                     top_p=self.top_p,
                     top_k=self.top_k,
                 )
@@ -210,24 +228,36 @@ class PACEStrategy:
 
         if num_particles == 1:
             ve = torch.zeros_like(s_mean)
-            consensus = torch.ones_like(s_mean)
+            agreement = torch.ones_like(s_mean)
             mode_tokens = y_tokens[:, 0]
         else:
-            ve, consensus, mode_tokens = self._vote_stats(y_tokens)
+            ve, consensus, mode_tokens, pairwise = self._vote_stats(y_tokens)
+            if self.agreement_metric == "pairwise":
+                agreement = pairwise
+            else:
+                agreement = consensus
+
+        s_score = s_mean
+        if self.use_margin_confidence:
+            probs = log_probs.exp()
+            top2 = probs.topk(2, dim=-1).values
+            margin = top2[..., 0] - top2[..., 1]
+            margin_mean = margin.mean(dim=1)
+            s_score = s_score + self.margin_weight * margin_mean
 
         self._last_mean_ve = (
             (ve * eligible).sum() / (eligible.sum().clamp_min(1))
         )
 
-        g = self._ranknorm(-s_mean, eligible)
+        g = self._ranknorm(-s_score, eligible)
         if num_particles > 1:
             g = g + self._ranknorm(ve, eligible)
 
         is_last = (steps is not None and step is not None and step >= steps - 1)
         self._apply_transitions(
-            s_mean=s_mean,
+            s_score=s_score,
             ve=ve,
-            consensus=consensus,
+            agreement=agreement,
             g=g,
             eligible=eligible,
             is_last=is_last,
@@ -311,7 +341,7 @@ class PACEStrategy:
         ]
         out = best_tokens.clone()
         out[choose_mode] = self._last_mode_tokens[choose_mode]
-        return out
+        return best_tokens
 
     def _eligible_mask(self, block_end: int | None, device: torch.device) -> torch.Tensor:
         if self._prompt_len is None or self._seq_len is None:
@@ -337,25 +367,57 @@ class PACEStrategy:
             mask[:, self._prompt_len : self._seq_len] = True
         return mask
 
-    def _apply_llada_logit_controls(self, logits: torch.Tensor) -> torch.Tensor:
+    def _sample_temperature(self) -> float:
+        if self.temperature > 0:
+            return self.temperature
+        if self.num_particles > 1 and self.particle_temperature > 0:
+            return self.particle_temperature
+        return 0.0
+
+    def _schedule_value(self, progress: float, kind: str) -> float:
+        if kind in ("none", "constant", None):
+            return 1.0
+        invert = False
+        if kind.endswith("_decay"):
+            invert = True
+            kind = kind[: -len("_decay")]
+        if kind == "linear":
+            base = progress
+        elif kind == "cosine":
+            base = 0.5 - 0.5 * math.cos(math.pi * progress)
+        else:
+            raise ValueError(f"Unknown schedule: {kind}")
+        return 1.0 - base if invert else base
+
+    def _progress(self) -> float:
+        if self._total_steps <= 1:
+            return 1.0
+        return min(1.0, float(self._global_step) / float(self._total_steps - 1))
+
+    def _apply_llada_logit_controls(
+        self, logits: torch.Tensor, *, temperature: float | None = None
+    ) -> torch.Tensor:
         if self.logits_eos_inf or self.confidence_eos_eot_inf:
             logits = logits.clone()
             logits[:, :, :, self.eos_token_id] = -torch.inf
             if self.confidence_eos_eot_inf:
                 logits[:, :, :, self.eot_token_id] = -torch.inf
-        if self.temperature == 0:
+        if temperature is None:
+            temperature = self._sample_temperature()
+        if temperature == 0:
             return logits
         logits = logits.to(torch.float64)
         noise = torch.rand_like(logits, dtype=torch.float64)
-        gumbel_noise = (-torch.log(noise)) ** self.temperature
+        gumbel_noise = (-torch.log(noise)) ** temperature
         return logits.exp() / gumbel_noise
 
     def _vote_stats(
         self, tokens: torch.Tensor
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         batch, num_particles, seq_len = tokens.shape
         ve = torch.zeros((batch, seq_len), device=tokens.device, dtype=torch.float32)
         consensus = torch.zeros_like(ve)
+        pairwise = torch.zeros_like(ve)
         mode_tokens = torch.zeros((batch, seq_len), device=tokens.device, dtype=tokens.dtype)
         for b in range(batch):
             for i in range(seq_len):
@@ -365,8 +427,12 @@ class PACEStrategy:
                 ve[b, i] = -(probs * torch.log(probs)).sum()
                 max_idx = torch.argmax(probs)
                 consensus[b, i] = probs[max_idx]
+                if num_particles > 1:
+                    pairwise[b, i] = (counts.float() * (counts.float() - 1)).sum() / (
+                        num_particles * (num_particles - 1)
+                    )
                 mode_tokens[b, i] = unique[max_idx]
-        return ve, consensus, mode_tokens
+        return ve, consensus, mode_tokens, pairwise
 
     def _ranknorm(self, values: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
         out = torch.zeros_like(values, dtype=torch.float32)
@@ -407,38 +473,68 @@ class PACEStrategy:
     def _apply_transitions(
         self,
         *,
-        s_mean: torch.Tensor,
+        s_score: torch.Tensor,
         ve: torch.Tensor,
-        consensus: torch.Tensor,
+        agreement: torch.Tensor,
         g: torch.Tensor,
         eligible: torch.Tensor,
         is_last: bool,
     ) -> None:
-        if self._token_state is None or self._last_freeze is None:
+        if self._token_state is None or self._last_freeze is None or self._last_provisional is None:
             return
 
         token_state = self._token_state
 
-        # M -> P
-        token_state[(token_state == _STATE_MASKED) & eligible] = _STATE_PROVISIONAL
-
-        eligible_count = eligible.sum(dim=1).clamp_min(1).float()
+        eligible_count_i = eligible.sum(dim=1).clamp_min(1)
+        eligible_count = eligible_count_i.float()
         frozen_count = ((token_state == _STATE_FROZEN) & eligible).sum(dim=1).float()
         f = frozen_count / eligible_count
-        tau_c = self.tau_c_min + (self.tau_c_max - self.tau_c_min) * f
-        q_t = self.q0 * (1 - f)
+        progress = self._progress()
+
+        masked_mask = (token_state == _STATE_MASKED) & eligible
+        masked_count = masked_mask.sum(dim=1)
+        target_mask_frac = 1.0 - self._schedule_value(progress, self.mask_schedule)
+        target_mask = torch.round(eligible_count * target_mask_frac).long()
+        target_mask = torch.minimum(target_mask, eligible_count_i)
+        target_mask = torch.clamp_min(target_mask, 0)
+
+        # M -> P (rate-controlled to shape mask schedule)
+        promote_count = (masked_count - target_mask).clamp_min(0)
+        for b in range(token_state.shape[0]):
+            k = int(promote_count[b].item())
+            if k <= 0:
+                continue
+            scores = -g[b].clone()
+            scores[~masked_mask[b]] = -torch.inf
+            _, top_idx = torch.topk(scores, k=k)
+            token_state[b, top_idx] = _STATE_PROVISIONAL
+            self._last_provisional[b, top_idx] = self._global_step
+        tau_base = self._schedule_value(progress, self.tau_c_schedule)
+        tau_step = self.tau_c_min + (self.tau_c_max - self.tau_c_min) * tau_base
+        tau_step = torch.full_like(f, tau_step)
+        if self.tau_c_f_weight > 0:
+            tau_f = self.tau_c_min + (self.tau_c_max - self.tau_c_min) * f
+            tau_c = (1 - self.tau_c_f_weight) * tau_step + self.tau_c_f_weight * tau_f
+        else:
+            tau_c = tau_step
+        q_base = 1.0 - self._schedule_value(progress, self.q_schedule)
+        q_t = self.q0 * q_base * (1 - f)
         r_t = (self.r0 * (1 - f) * eligible_count).long()
 
-        median_s = self._masked_median(s_mean, eligible)
+        s_thresh = self._masked_quantile(s_score, eligible, self.freeze_s_quantile)
 
         # P -> F
         for b in range(token_state.shape[0]):
             freeze_mask = (
                 (token_state[b] == _STATE_PROVISIONAL)
                 & eligible[b]
-                & (consensus[b] >= tau_c[b])
-                & (s_mean[b] >= median_s[b])
+                & (agreement[b] >= tau_c[b])
+                & (s_score[b] >= s_thresh[b])
             )
+            if self.provisional_lock > 0:
+                freeze_mask = freeze_mask & (
+                    (self._global_step - self._last_provisional[b]) >= self.provisional_lock
+                )
             if freeze_mask.any().item():
                 token_state[b, freeze_mask] = _STATE_FROZEN
                 self._last_freeze[b, freeze_mask] = self._global_step
@@ -459,9 +555,9 @@ class PACEStrategy:
                 token_state[b, top_idx] = _STATE_MASKED
 
         # F -> P (rare unfreeze)
-        if self.r0 > 0:
+        if self.r0 > 0 and not is_last:
             ve_hi = self._masked_quantile(ve, eligible, self.ve_quantile_hi)
-            s_lo = self._masked_quantile(s_mean, eligible, self.s_quantile_lo)
+            s_lo = self._masked_quantile(s_score, eligible, self.s_quantile_lo)
             for b in range(token_state.shape[0]):
                 if r_t[b] <= 0:
                     continue
@@ -471,7 +567,7 @@ class PACEStrategy:
                     & eligible[b]
                     & cooldown
                     & (ve[b] >= ve_hi[b])
-                    & (s_mean[b] <= s_lo[b])
+                    & (s_score[b] <= s_lo[b])
                 )
                 if not cand.any().item():
                     continue
@@ -479,6 +575,13 @@ class PACEStrategy:
                 scores[~cand] = -torch.inf
                 _, top_idx = torch.topk(scores, k=min(r_t[b].item(), cand.sum().item()))
                 token_state[b, top_idx] = _STATE_PROVISIONAL
+                self._last_provisional[b, top_idx] = self._global_step
+
+        if is_last:
+            final_mask = (token_state == _STATE_PROVISIONAL) & eligible
+            if final_mask.any().item():
+                token_state[final_mask] = _STATE_FROZEN
+                self._last_freeze[final_mask] = self._global_step
 
     def _update_finalize_scores(
         self,
