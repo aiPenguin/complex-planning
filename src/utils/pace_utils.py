@@ -9,10 +9,12 @@ import torch
 
 
 def is_pace_strategy(strategy: object) -> bool:
+    """Lightweight capability check for PACE-Flow-Dyn strategies."""
     return bool(getattr(strategy, "supports_pace_flow_dyn", False))
 
 
 def use_particle_expansion(strategy: object) -> bool:
+    """Whether the strategy expects particle expansion and finalize()."""
     return (
         is_pace_strategy(strategy)
         and getattr(strategy, "num_particles", 1) > 1
@@ -30,6 +32,7 @@ def init_pace_state(
     device: torch.device,
     total_steps: int,
 ) -> None:
+    """Initialize per-run state for a PACE strategy."""
     strategy.reset_state(
         batch_size=batch_size,
         seq_len=seq_len,
@@ -45,6 +48,7 @@ def expand_for_particles(
     input_ids: torch.Tensor,
     attention_mask: torch.Tensor | None,
 ) -> Tuple[torch.Tensor, torch.Tensor | None]:
+    """Repeat inputs along the batch dimension for particle sampling."""
     repeat = strategy.num_particles
     input_ids = input_ids.repeat_interleave(repeat, dim=0)
     if attention_mask is not None:
@@ -53,20 +57,17 @@ def expand_for_particles(
 
 
 def finalize_particles(strategy: object, sequences: torch.Tensor) -> torch.Tensor:
+    """Reduce particle-expanded sequences to a single sequence per batch."""
     return strategy.finalize(sequences)
 
 
 def consume_strategy_particle_log(model: object) -> torch.Tensor | None:
+    """Fetch and clear any per-step particle logs if the strategy exposes them."""
     strategy = getattr(model, "strategy", None)
     if strategy is None:
         return None
     if hasattr(strategy, "consume_particle_log"):
         return strategy.consume_particle_log()
-    if hasattr(strategy, "batch_particle_log"):
-        log = getattr(strategy, "batch_particle_log")
-        if log is not None:
-            setattr(strategy, "batch_particle_log", None)
-        return log
     return None
 
 
@@ -74,6 +75,7 @@ def append_particle_log(
     particle_logs: list[torch.Tensor],
     log: torch.Tensor | None,
 ) -> None:
+    """Normalize a log tensor to CPU and append it to a batch list."""
     if log is None:
         return
     log = log.detach()
@@ -83,6 +85,7 @@ def append_particle_log(
 
 
 def finalize_particle_logs(particle_logs: list[torch.Tensor]) -> torch.Tensor | None:
+    """Concatenate batch logs into a single tensor and clear the list."""
     if not particle_logs:
         return None
     if len(particle_logs) == 1:

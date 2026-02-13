@@ -5,12 +5,12 @@ max_new_tokens: 128  # 生成长度（若未指定 gen_length）
 
 # Common decoding params
 steps: 128  # 扩散/解码步数
-temperature: 0.0  # 采样温度（LLaDA Gumbel / Dream 采样）
-# Used when temperature=0 and num_particles>1 to diversify particles.
-particle_temperature: 0.7  # 粒子专用温度（temperature=0 时仍可多样化）
+temperature: 1.0  # 采样温度（LLaDA Gumbel / Dream 采样）
+use_noise: true  # 是否启用采样噪声（统一控制，不区分模型）
+sampling_method: argmax  # 采样方式：sample/argmax
 cfg_scale: 0.0  # CFG 强度（LLaDA 用，0 为关闭）
 
-# LLaDA-related params (ignored by Dream)
+# Optional token-id/logit controls
 block_length: 32  # LLaDA block 采样长度
 mask_id: 126336  # LLaDA [MASK] token id
 eos_token_id: 126081  # EOS token id
@@ -18,7 +18,7 @@ eot_token_id: 126348  # EOT token id
 logits_eos_inf: false  # 将 EOS logits 置 -inf（logit 级别控制）
 confidence_eos_eot_inf: false  # 将 EOS/EOT 置信度置 -inf（confidence 级别控制）
 
-# Dream-related params (ignored by LLaDA)
+# Optional sampling params
 top_p: 0.95  # nucleus sampling
 top_k: null  # top-k sampling（null=关闭）
 alg: pace_flow_dyn  # Dream compatibility (unused in PACE)
