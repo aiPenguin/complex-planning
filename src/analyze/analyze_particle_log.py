@@ -137,6 +137,35 @@ def _consensus_stats(tokens: np.ndarray) -> Tuple[list, list, list]:
     return mean_cons, p10_cons, p90_cons
 
 
+def _ve_stats(tokens: np.ndarray) -> Tuple[list, list, list]:
+    """Variation entropy stats (mean/p10/p90) over samples+positions per step."""
+    samples, num_particles, gen_len, steps = tokens.shape
+    mean_ve = []
+    p10_ve = []
+    p90_ve = []
+    for step in range(steps):
+        vals = []
+        for b in range(samples):
+            for i in range(gen_len):
+                tok = tokens[b, :, i, step]
+                valid = tok != -1
+                if not valid.any():
+                    continue
+                _, counts = np.unique(tok[valid], return_counts=True)
+                probs = counts.astype(np.float64) / float(valid.sum())
+                ve = -np.sum(probs * np.log(probs))
+                vals.append(float(ve))
+        if not vals:
+            mean_ve.append(float("nan"))
+            p10_ve.append(float("nan"))
+            p90_ve.append(float("nan"))
+        else:
+            mean_ve.append(float(np.mean(vals)))
+            p10_ve.append(float(np.percentile(vals, 10)))
+            p90_ve.append(float(np.percentile(vals, 90)))
+    return mean_ve, p10_ve, p90_ve
+
+
 def _token_change_rate(tokens: np.ndarray) -> list:
     """Fraction of tokens that changed vs previous step (sample mean)."""
     samples, num_particles, gen_len, steps = tokens.shape
@@ -222,6 +251,9 @@ def _write_plots(
     consensus_mean: list,
     consensus_p10: list,
     consensus_p90: list,
+    ve_mean: list,
+    ve_p10: list,
+    ve_p90: list,
     change_rate: list,
     freeze_hist: Dict[str, Any],
     unmask_hist: Dict[str, Any],
@@ -268,6 +300,21 @@ def _write_plots(
     plt.legend()
     plt.tight_layout()
     plt.savefig(out_dir / "consensus_change.png", dpi=160)
+    plt.close()
+
+    # Variation entropy
+    plt.figure(figsize=(8, 4))
+    plt.plot(x, ve_mean, label="ve_mean")
+    plt.fill_between(x, ve_p10, ve_p90, alpha=0.2, label="ve p10-p90")
+    plt.ylim(0.0, float(np.log(max(num_particles, 1))))
+    plt.xlabel("step")
+    plt.ylabel("entropy")
+    plt.title(
+        f"Variation Entropy (mean over samples)  S={samples} P={num_particles} G={gen_len}"
+    )
+    plt.legend()
+    plt.tight_layout()
+    plt.savefig(out_dir / "ve.png", dpi=160)
     plt.close()
 
     # Freeze/unmask histograms
@@ -397,6 +444,7 @@ def main() -> int:
     unmask_hist = _histogram(first_unmask, steps)
 
     consensus_mean, consensus_p10, consensus_p90 = _consensus_stats(tokens)
+    ve_mean, ve_p10, ve_p90 = _ve_stats(tokens)
     change_rate = _token_change_rate(tokens)
 
     summary: Dict[str, Any] = {
@@ -414,6 +462,11 @@ def main() -> int:
             "p10": consensus_p10,
             "p90": consensus_p90,
         },
+        "variation_entropy": {
+            "mean": ve_mean,
+            "p10": ve_p10,
+            "p90": ve_p90,
+        },
         "token_change_rate": change_rate,
         "first_freeze_hist": freeze_hist,
         "first_unmask_hist": unmask_hist,
@@ -422,6 +475,7 @@ def main() -> int:
             "dimensions": "Tensor dimensions after optional sample slicing.",
             "state_fractions": "Per-step mean/variance of per-sample state fractions.",
             "consensus": "Per-step consensus stats over samples+positions.",
+            "variation_entropy": "Per-step variation entropy over samples+positions.",
             "token_change_rate": "Per-step fraction of tokens that changed vs previous step.",
             "first_freeze_hist": "Histogram of first step when a position becomes frozen.",
             "first_unmask_hist": "Histogram of first step when a position is no longer masked.",
@@ -456,6 +510,9 @@ def main() -> int:
         consensus_mean=consensus_mean,
         consensus_p10=consensus_p10,
         consensus_p90=consensus_p90,
+        ve_mean=ve_mean,
+        ve_p10=ve_p10,
+        ve_p90=ve_p90,
         change_rate=change_rate,
         freeze_hist=freeze_hist,
         unmask_hist=unmask_hist,
