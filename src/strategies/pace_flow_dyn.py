@@ -60,6 +60,7 @@ class PACEStrategy:
     agreement_metric: str = "consensus"
     use_margin_confidence: bool = False
     margin_weight: float = 1.0
+    rrf_k: float = 60.0
 
     # LLaDA-specific compatibility flags
     eos_token_id: int = 126081
@@ -251,7 +252,9 @@ class PACEStrategy:
 
         g = self._ranknorm(-s_score, eligible)
         if num_particles > 1:
-            g = g + self._ranknorm(ve, eligible)
+            r1 = self._masked_rank(-s_score, eligible, descending=True)
+            r2 = self._masked_rank(ve, eligible, descending=True)
+            g = 1.0 / (self.rrf_k + r1) + 1.0 / (self.rrf_k + r2)
 
         is_last = (steps is not None and step is not None and step >= steps - 1)
         self._apply_transitions(
@@ -449,6 +452,23 @@ class PACEStrategy:
             out[b, idx] = (ranks - 0.5) / order.numel()
         return out
 
+    def _masked_rank(
+        self, values: torch.Tensor, mask: torch.Tensor, *, descending: bool
+    ) -> torch.Tensor:
+        out = torch.zeros_like(values, dtype=torch.float32)
+        for b in range(values.shape[0]):
+            idx = mask[b].nonzero(as_tuple=False).squeeze(-1)
+            if idx.numel() == 0:
+                continue
+            vals = values[b, idx]
+            order = torch.argsort(vals, descending=descending)
+            ranks = torch.empty_like(order, dtype=torch.float32)
+            ranks[order] = torch.arange(
+                1, order.numel() + 1, device=values.device, dtype=torch.float32
+            )
+            out[b, idx] = ranks
+        return out
+
     def _masked_median(self, values: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
         med = torch.zeros(values.shape[0], device=values.device, dtype=values.dtype)
         for b in range(values.shape[0]):
@@ -554,7 +574,7 @@ class PACEStrategy:
                 _, top_idx = torch.topk(scores, k=k)
                 token_state[b, top_idx] = _STATE_MASKED
 
-        # F -> P (rare unfreeze)
+        # F -> M (rare unfreeze)
         if self.r0 > 0 and not is_last:
             ve_hi = self._masked_quantile(ve, eligible, self.ve_quantile_hi)
             s_lo = self._masked_quantile(s_score, eligible, self.s_quantile_lo)
@@ -574,8 +594,7 @@ class PACEStrategy:
                 scores = ve[b].clone()
                 scores[~cand] = -torch.inf
                 _, top_idx = torch.topk(scores, k=min(r_t[b].item(), cand.sum().item()))
-                token_state[b, top_idx] = _STATE_PROVISIONAL
-                self._last_provisional[b, top_idx] = self._global_step
+                token_state[b, top_idx] = _STATE_MASKED
 
         if is_last:
             final_mask = (token_state == _STATE_PROVISIONAL) & eligible
