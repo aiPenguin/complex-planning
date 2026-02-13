@@ -1,0 +1,10 @@
+_target_: src.models.dTreeRPO.DTreeRPO
+model_name: GSAI-ML/LLaDA-8B-Instruct
+device: cuda
+torch_dtype: bfloat16
+trust_remote_code: true
+padding_side: left
+use_chat_template: true
+add_generation_prompt: true
+adapter_path: Leyiii/llada_sudoku_adapter
+
