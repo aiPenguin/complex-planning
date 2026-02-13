@@ -4,3 +4,4 @@ torch==2.5.1
 numpy
 tqdm
 matplotlib
+peft
