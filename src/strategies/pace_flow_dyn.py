@@ -529,7 +529,10 @@ class PACEStrategy:
             block_length=self.block_length,
             device=x.device,
         )
-        active = (self._token_state == _STATE_MASKED) & eligible
+        active = (
+            (self._token_state == _STATE_MASKED)
+            | (self._token_state == _STATE_PROVISIONAL)
+        ) & eligible
 
         active_particles = active.unsqueeze(1).expand(batch, num_particles, seq_len)
         y_tokens = x_tokens.clone()
