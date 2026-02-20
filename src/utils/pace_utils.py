@@ -71,6 +71,16 @@ def consume_strategy_particle_log(model: object) -> torch.Tensor | None:
     return None
 
 
+def consume_strategy_generation_candidates(model: object) -> dict | None:
+    """Fetch and clear primary/secondary/mode/best selections if available."""
+    strategy = getattr(model, "strategy", None)
+    if strategy is None:
+        return None
+    if hasattr(strategy, "consume_generation_candidates"):
+        return strategy.consume_generation_candidates()
+    return None
+
+
 def append_particle_log(
     particle_logs: list[torch.Tensor],
     log: torch.Tensor | None,
@@ -102,3 +112,51 @@ def finalize_particle_logs(particle_logs: list[torch.Tensor]) -> torch.Tensor | 
         log = torch.cat(particle_logs, dim=0)
     particle_logs.clear()
     return log
+
+
+def append_generation_candidates(
+    candidate_logs: list[dict],
+    log: dict | None,
+) -> None:
+    """Normalize candidate tensors to CPU and append to a batch list."""
+    if log is None:
+        return
+    normalized = dict(log)
+    for key in ("primary", "secondary", "particles"):
+        tensor = normalized.get(key)
+        if isinstance(tensor, torch.Tensor):
+            tensor = tensor.detach()
+            if tensor.device.type != "cpu":
+                tensor = tensor.cpu()
+            normalized[key] = tensor
+    candidate_logs.append(normalized)
+
+
+def finalize_generation_candidates(candidate_logs: list[dict]) -> dict | None:
+    """Concatenate candidate logs across batches and clear the list."""
+    if not candidate_logs:
+        return None
+    if len(candidate_logs) == 1:
+        payload = candidate_logs[0]
+    else:
+        payload: dict = {}
+        primary = [c["primary"] for c in candidate_logs]
+        secondary = [c["secondary"] for c in candidate_logs if c.get("secondary") is not None]
+        particles = [c.get("particles") for c in candidate_logs]
+        payload["primary"] = torch.cat(primary, dim=0) if primary else None
+        payload["secondary"] = torch.cat(secondary, dim=0) if secondary else None
+        payload["primary_source"] = sum(
+            [c.get("primary_source") or [] for c in candidate_logs], []
+        )
+        payload["secondary_source"] = sum(
+            [c.get("secondary_source") or [] for c in candidate_logs], []
+        )
+        if all(isinstance(p, torch.Tensor) for p in particles):
+            payload["particles"] = torch.cat(particles, dim=0)
+        else:
+            payload["particles"] = None
+        prompt_lens = [c.get("prompt_len") for c in candidate_logs]
+        payload["prompt_len"] = prompt_lens[0] if prompt_lens else None
+        payload["seq_len"] = None
+    candidate_logs.clear()
+    return payload

@@ -95,6 +95,7 @@ class SudokuEvaluator:
 
             inputs = [self._build_prompt(examples, item) for item in data]
 
+            setattr(generator, "run_label", f"sudoku_4x4_{n}")
             generations = generator.generate(inputs)
             generations = [self._clean_generation(g) for g in generations]
 

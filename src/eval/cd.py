@@ -84,6 +84,7 @@ class CDEvaluator:
             data = data[: self.max_items]
 
         inputs = [template.format(input=i["input"]) for i in data]
+        setattr(generator, "run_label", f"cd{variant}")
         generations = generator.generate(inputs)
         generations = [g.split("<|end_of_text|>")[0].split("\n")[0] for g in generations]
         acc = self._metric([i["input"] for i in data], generations)

@@ -1,6 +1,7 @@
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, List
+from typing import List
+import json
 import textwrap
 
 from hydra.utils import instantiate
@@ -11,8 +12,11 @@ import torch
 
 from src.utils.pace_utils import (
     consume_strategy_particle_log,
+    consume_strategy_generation_candidates,
     append_particle_log,
     finalize_particle_logs,
+    append_generation_candidates,
+    finalize_generation_candidates,
 )
 
 @dataclass
@@ -23,6 +27,8 @@ class ModelGenerator:
     run_label: str | None = None
     sample_max_chars: int = 600
     _particle_logs: List[torch.Tensor] = field(default_factory=list, init=False, repr=False)
+    _candidate_logs: List[dict] = field(default_factory=list, init=False, repr=False)
+    _candidate_segments: List[dict] = field(default_factory=list, init=False, repr=False)
 
     def _format_sample(self, text: str) -> str:
         preview = text.replace("\r\n", "\n").replace("\r", "\n")
@@ -49,9 +55,14 @@ class ModelGenerator:
             tqdm.write("[sample input]")
             tqdm.write(textwrap.indent(sample, "  "))
 
+        if prompts:
+            self._candidate_segments.append(
+                {"label": self.run_label or "generate", "count": len(prompts)}
+            )
+
         if self.batch_size is None:
             outputs = self.model.generate(prompts)
-            self._record_particle_log()
+            self._record_strategy_logs()
             return outputs
 
         outputs: List[str] = []
@@ -61,15 +72,25 @@ class ModelGenerator:
         for start in tqdm(batch_iter, total=num_batches, desc="generate", unit="batch"):
             batch = prompts[start : start + self.batch_size]
             outputs.extend(self.model.generate(batch))
-            self._record_particle_log()
+            self._record_strategy_logs()
         return outputs
 
-    def _record_particle_log(self) -> None:
+    def _record_strategy_logs(self) -> None:
         log = consume_strategy_particle_log(self.model)
         append_particle_log(self._particle_logs, log)
+        candidates = consume_strategy_generation_candidates(self.model)
+        append_generation_candidates(self._candidate_logs, candidates)
 
     def consume_particle_log(self) -> torch.Tensor | None:
         return finalize_particle_logs(self._particle_logs)
+
+    def consume_generation_candidates(self) -> dict | None:
+        payload = finalize_generation_candidates(self._candidate_logs)
+        if payload is None:
+            return None
+        payload["segments"] = list(self._candidate_segments)
+        self._candidate_segments.clear()
+        return payload
 
 class Engine:
     """Hydra-wired orchestrator that builds model, strategy, and evaluator."""
@@ -176,9 +197,50 @@ class Engine:
 
     def _save_particle_log(self) -> None:
         log = self.generator.consume_particle_log()
-        if log is None:
+        if log is not None:
+            filename = getattr(self.strategy, "log_particles_filename", "pace_particles.pt")
+            path = Path(self.output_dir) / filename
+            torch.save(log, path)
+            print(f"[particle_log] saved: {path}")
+        candidates = self.generator.consume_generation_candidates()
+        if candidates is None:
             return
-        filename = getattr(self.strategy, "log_particles_filename", "pace_particles.pt")
-        path = Path(self.output_dir) / filename
-        torch.save(log, path)
-        print(f"[particle_log] saved: {path}")
+        cand_name = getattr(self.strategy, "log_candidates_filename", "pace_candidates.pt")
+        cand_path = Path(self.output_dir) / cand_name
+        torch.save(candidates, cand_path)
+        print(f"[particle_log] saved: {cand_path}")
+
+        tokenizer = getattr(self.model, "tokenizer", None)
+        prompt_len = candidates.get("prompt_len")
+        primary_tokens = candidates.get("primary")
+        if tokenizer is None or primary_tokens is None or prompt_len is None:
+            return
+        gen_tokens = primary_tokens[:, prompt_len:]
+        decoded_primary = tokenizer.batch_decode(gen_tokens, skip_special_tokens=True)
+        decoded_secondary = None
+        secondary_tokens = candidates.get("secondary")
+        if isinstance(secondary_tokens, torch.Tensor):
+            decoded_secondary = tokenizer.batch_decode(
+                secondary_tokens[:, prompt_len:], skip_special_tokens=True
+            )
+        decoded_particles = None
+        particles = candidates.get("particles")
+        if isinstance(particles, torch.Tensor):
+            flat = particles[:, :, prompt_len:].reshape(-1, particles.shape[-1] - prompt_len)
+            decoded_flat = tokenizer.batch_decode(flat, skip_special_tokens=True)
+            decoded_particles = [
+                decoded_flat[i : i + particles.shape[1]]
+                for i in range(0, len(decoded_flat), particles.shape[1])
+            ]
+
+        decoded_payload = {
+            "primary": decoded_primary,
+            "secondary": decoded_secondary,
+            "primary_source": candidates.get("primary_source"),
+            "secondary_source": candidates.get("secondary_source"),
+            "particles": decoded_particles,
+            "segments": candidates.get("segments"),
+        }
+        decoded_path = cand_path.with_suffix(".json")
+        decoded_path.write_text(json.dumps(decoded_payload, ensure_ascii=False, indent=2))
+        print(f"[particle_log] saved: {decoded_path}")

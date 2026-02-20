@@ -117,6 +117,7 @@ class TripEvaluator:
             splits = item["prompt_5shot"].split("TASK:")
             inputs.append("TASK:".join(splits[:3] + [splits[-1]]))
 
+        setattr(generator, "run_label", "trip")
         generations = generator.generate(inputs)
         generations = [g.split("<|endoftext|>")[0].split("\n\nTASK")[0] for g in generations]
         hard_acc = self._metric(data, generations)

@@ -383,6 +383,7 @@ class PACEStrategy:
     log_particles: bool = False
     log_particles_to_cpu: bool = True
     log_particles_filename: str = "pace_particles.pt"
+    log_candidates_filename: str = "pace_candidates.pt"
 
     # Internal state (initialized via reset_state)
     _token_state: torch.Tensor | None = field(default=None, init=False, repr=False)
@@ -397,6 +398,11 @@ class PACEStrategy:
     _last_mode_score: torch.Tensor | None = field(default=None, init=False, repr=False)
     _last_particle_scores: torch.Tensor | None = field(default=None, init=False, repr=False)
     _last_mean_ve: torch.Tensor | None = field(default=None, init=False, repr=False)
+    _last_primary_tokens: torch.Tensor | None = field(default=None, init=False, repr=False)
+    _last_secondary_tokens: torch.Tensor | None = field(default=None, init=False, repr=False)
+    _last_primary_source: list[str] | None = field(default=None, init=False, repr=False)
+    _last_secondary_source: list[str] | None = field(default=None, init=False, repr=False)
+    _last_particle_tokens: torch.Tensor | None = field(default=None, init=False, repr=False)
 
     def __post_init__(self) -> None:
         if self.max_new_tokens is None and self.gen_length is None:
@@ -446,6 +452,11 @@ class PACEStrategy:
         self._last_mode_score = None
         self._last_particle_scores = None
         self._last_mean_ve = None
+        self._last_primary_tokens = None
+        self._last_secondary_tokens = None
+        self._last_primary_source = None
+        self._last_secondary_source = None
+        self._last_particle_tokens = None
         if self.log_particles:
             log_device = torch.device("cpu") if self.log_particles_to_cpu else device
             gen_length = max(seq_len - prompt_len, 0)
@@ -647,12 +658,54 @@ class PACEStrategy:
         self.batch_particle_log = None
         return log
 
+    def consume_generation_candidates(self) -> dict | None:
+        """Return last primary/secondary/mode/best selections and clear them."""
+        if self._last_primary_tokens is None:
+            return None
+        payload = {
+            "primary": self._last_primary_tokens,
+            "secondary": self._last_secondary_tokens,
+            "primary_source": self._last_primary_source,
+            "secondary_source": self._last_secondary_source,
+            "particles": self._last_particle_tokens,
+            "prompt_len": self._prompt_len,
+            "seq_len": self._seq_len,
+        }
+        self._last_primary_tokens = None
+        self._last_secondary_tokens = None
+        self._last_primary_source = None
+        self._last_secondary_source = None
+        self._last_particle_tokens = None
+        return payload
+
     def finalize(self, x: torch.Tensor) -> torch.Tensor:
         """Collapse particles into a single sequence per batch."""
         if self.num_particles == 1:
-            return x
+            tokens = x.view(self._batch_size, 1, self._seq_len)
+            choose_mode = torch.ones((self._batch_size,), device=x.device, dtype=torch.bool)
+            primary = tokens[:, 0]
+            secondary = tokens[:, 0]
+            self._last_primary_tokens = primary.detach()
+            self._last_secondary_tokens = secondary.detach()
+            self._last_primary_source = ["mode"] * self._batch_size
+            self._last_secondary_source = ["best"] * self._batch_size
+            self._last_particle_tokens = tokens.detach()
+            return primary
 
         tokens = x.view(self._batch_size, self.num_particles, self._seq_len)
+
+        if (
+            self._last_particle_scores is None
+            or self._last_mode_score is None
+            or self._last_mode_tokens is None
+        ):
+            primary = tokens[:, 0]
+            self._last_primary_tokens = primary.detach()
+            self._last_secondary_tokens = None
+            self._last_primary_source = ["best"] * self._batch_size
+            self._last_secondary_source = [None] * self._batch_size
+            self._last_particle_tokens = tokens.detach()
+            return primary
 
         best_idx = torch.argmax(self._last_particle_scores, dim=-1)
         best_tokens = tokens[torch.arange(self._batch_size, device=x.device), best_idx]
@@ -660,9 +713,18 @@ class PACEStrategy:
         choose_mode = self._last_mode_score >= self._last_particle_scores[
             torch.arange(self._batch_size, device=x.device), best_idx
         ]
-        out = best_tokens.clone()
-        out[choose_mode] = self._last_mode_tokens[choose_mode]
-        return out
+        primary = best_tokens.clone()
+        primary[choose_mode] = self._last_mode_tokens[choose_mode]
+        secondary = self._last_mode_tokens.clone()
+        secondary[choose_mode] = best_tokens[choose_mode]
+
+        self._last_primary_tokens = primary.detach()
+        self._last_secondary_tokens = secondary.detach()
+        self._last_primary_source = ["mode" if flag else "best" for flag in choose_mode.tolist()]
+        self._last_secondary_source = ["best" if flag else "mode" for flag in choose_mode.tolist()]
+        self._last_particle_tokens = tokens.detach()
+
+        return primary
 
     def _update_finalize_scores(
         self,
